@@ -34,6 +34,8 @@ pvlearn/
 │   └── service/        # REST service (FastAPI), brain persistence, weather-provider adapters
 │                        #   only importable when the `service` extra is installed
 tests/                   # unit and integration tests mirroring pvlearn/ structure
+scripts/                 # one-off maintenance and data-preparation scripts, not shipped
+                         #   with the package and free to use dependencies pvlearn does not
 pvlearn-umsetzungsplan.md  # phased roadmap and architecture decisions — read first
 ```
 
