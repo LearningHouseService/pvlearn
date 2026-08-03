@@ -1,0 +1,32 @@
+// devcontainer.json
+{
+	"name": "pvlearn Dev Container",
+	"image": "mcr.microsoft.com/devcontainers/python:3.13-trixie",
+	"features": {
+		"ghcr.io/devcontainers/features/node:2": {}
+	},
+	"customizations": {
+		"vscode": {
+			"extensions": [
+				"anthropic.claude-code",
+				"charliermarsh.ruff",
+				"ms-python.python",
+				"ms-python.vscode-pylance",
+				"ms-azuretools.vscode-containers",
+				"ms-azuretools.vscode-docker",
+				"bierner.markdown-mermaid",
+				"mhutchie.git-graph"
+			],
+			"settings": {
+				"python.terminal.activateEnvironment": true,
+				"editor.codeActionsOnSave": {
+					"source.fixAll.ruff": "explicit",
+					"source.organizeImports.ruff": "explicit"
+				},
+				"ruff.organizeImports": true,
+				"ruff.fixOnSave": true
+			}
+		}
+	},
+	"postCreateCommand": "bash .devcontainer/post-create.sh"
+}
