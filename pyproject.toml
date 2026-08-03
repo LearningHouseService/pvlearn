@@ -44,6 +44,9 @@ dev = [
     "pytest-asyncio>=1.4",
     "pytest-cov>=7.1",
     "pytest-xdist>=3.8",
+    # Reading the Parquet reference fixture. The library itself takes DataFrames
+    # from its caller and never touches Parquet, so this stays a test dependency.
+    "pyarrow>=18",
 ]
 service = [
     "fastapi>=0.118",
