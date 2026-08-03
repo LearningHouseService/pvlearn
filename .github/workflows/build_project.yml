@@ -26,7 +26,7 @@ jobs:
         with:
           script: |
             const refName = '${{ github.ref_name || github.event.release.tag_name }}';
-            core.setOutput('ref_name', refName.toLowerCase().replaceAll(/[/.]/g, '-').trim('-'));
+            core.setOutput('ref_name', refName.toLowerCase().replaceAll(/[/.]/g, '-').replace(/^-+|-+$/g, ''));
 
   build-check:
     runs-on: ubuntu-latest
@@ -34,8 +34,7 @@ jobs:
     env:
       REF_NAME: ${{ needs.variables.outputs.ref_name }}
     permissions:
-      id-token: write
-      contents: write
+      contents: read
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -48,7 +47,7 @@ jobs:
           python-version: "3.13"
 
       - name: Cache Python packages
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cache/pip
@@ -100,20 +99,36 @@ jobs:
         run: python -m build
 
       - name: Save python artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: python-artifacts-3.13-${{ env.REF_NAME }}
           path: |
             dist
 
+  # Publishing is isolated in its own release-only job so that the elevated
+  # permissions it needs are never granted to the job that runs tests and builds.
+  publish:
+    runs-on: ubuntu-latest
+    needs: [variables, build-check, build-compat]
+    if: ${{ github.event_name == 'release' }}
+    env:
+      REF_NAME: ${{ needs.variables.outputs.ref_name }}
+    permissions:
+      id-token: write
+      contents: write
+    steps:
+      - name: Download python artifacts
+        uses: actions/download-artifact@v8
+        with:
+          name: python-artifacts-3.13-${{ env.REF_NAME }}
+          path: dist
+
       - name: Publish package to pypi
-        if: ${{ github.event_name == 'release' }}
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
           packages-dir: dist/
 
       - name: Publish assets to github
-        if: ${{ github.event_name == 'release' }}
         uses: svenstaro/upload-release-action@v2
         with:
           repo_token: ${{ github.token }}
@@ -146,7 +161,7 @@ jobs:
           python-version: ${{ matrix.python-version }}
 
       - name: Cache Python packages
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cache/pip

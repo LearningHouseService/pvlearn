@@ -1,6 +1,6 @@
-try:
-    from importlib.metadata import version
+from importlib.metadata import PackageNotFoundError, version
 
+try:
     __version__ = version("pvlearn")
-except Exception:  # pragma: no cover
+except PackageNotFoundError:  # pragma: no cover - only hit when not installed
     __version__ = "0.0.0.unknown"
