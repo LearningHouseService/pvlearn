@@ -1,0 +1,13 @@
+{
+  "venvPath": ".",
+  "venv": ".venv",
+  "include": [
+    "pvlearn",
+    "tests"
+  ],
+  "exclude": [
+    ".venv",
+    "htmlcov",
+    "pvlearn.egg-info"
+  ]
+}
