@@ -66,6 +66,13 @@ pytest --cov=pvlearn --cov-report=xml:coverage.xml
 pytest tests/path/to/test_file.py
 ```
 
+### Commits
+
+This repository enforces the Developer Certificate of Origin. Every commit needs a
+`Signed-off-by` trailer or the DCO check blocks the pull request — commit with `git commit -s`.
+To repair a branch where it is missing: `git rebase <base> --signoff` followed by
+`git push --force-with-lease`.
+
 ---
 
 ## Code Conventions
