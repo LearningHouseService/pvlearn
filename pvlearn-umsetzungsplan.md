@@ -201,7 +201,7 @@ Ohne diesen Schritt ist Phase 1a nicht verifizierbar.
 **Modell-Split:** `Forecast(Component)` bleibt in solaredge2mqtt und erbt von einem neuen, dekorationsfreien `pvlearn.ForecastResult`, das die Aggregationslogik trägt (`energy_today`, `energy_today_remaining`, `energy_current_hour`, `energy_next_hour`, `energy_tomorrow`). Diese Logik wird in allen vier Stufen gebraucht — sie darf nur einmal existieren.
 
 **Abnahme:**
-- [ ] `solaredge2mqtt` mit `pvlearn`-Dependency erzeugt auf dem Referenzdatensatz identische Prognosen wie die Baseline. Offen: pvlearn-seitig durch `tests/test_extraction_regression.py` erbracht (`Forecaster` reproduziert die Prognosegüte von `baseline_forecast.parquet` innerhalb Toleranz — bitgenauer Vergleich ist hardwareabhängig und nicht CI-tauglich, siehe Nachtrag zu Punkt 6 in Kapitel 6); das Wiring in `solaredge2mqtt` selbst (Dependency, `Forecast(Component)` erbt von `ForecastResult`, Entkopplung dort) ist bewusst eine eigene Session/PR in jenem Repo.
+- [x] `solaredge2mqtt` mit `pvlearn`-Dependency erzeugt auf dem Referenzdatensatz identische Prognosen wie die Baseline. Erbracht durch `tests/test_extraction_regression.py` (pvlearn-seitig) und `tests/test_pvlearn_wiring_regression.py` (solaredge2mqtt-seitig), beide gegen Prognosegüte statt Bitgleichheit (hardwareabhängig, siehe Nachtrag zu Punkt 6 in Kapitel 6). Wiring liegt in `solaredge2mqtt`s `storedge`-Branch (dessen Merge nach `main` ist ein eigener, unabhängiger Vorgang in jenem Repo).
 - [x] pvlearn importiert nichts aus `solaredge2mqtt`.
 - [x] pvlearn hat keine Imports von `paho-mqtt`, `influxdb-client`, `fastapi`.
 
