@@ -93,9 +93,9 @@ Das bisherige Power-Modell entfällt. Begründung: Beide Modelle trainieren auf 
 
 Auf dem Referenzdatensatz aus Phase 0 ist das empirisch bestätigt: MAE 620,88 Wh für das Energiemodell gegenüber 624,93 W für das Leistungsmodell, R² 0,886 gegenüber 0,885. Die beiden Modelle liegen unter einem Prozent auseinander.
 
-`power_period` wird **weiterhin publiziert**, abgeleitet als `energy_wh / interval`. Damit ist der Wegfall kein Breaking Change für MQTT-Konsumenten. Was verloren geht, ist die Momentanleistung zum Zeitstempel; das braucht weder das Energy Dashboard noch ein bekannter Automations-Use-Case. Im Changelog als „jetzt Intervallmittel statt Momentanwert" dokumentieren.
+`power_period` wird **weiterhin publiziert**, abgeleitet als `energy_wh * 60 / interval_minutes`. Damit ist der Wegfall kein Breaking Change für MQTT-Konsumenten. Was verloren geht, ist die Momentanleistung zum Zeitstempel; das braucht weder das Energy Dashboard noch ein bekannter Automations-Use-Case. Im Changelog als „jetzt Intervallmittel statt Momentanwert" dokumentieren.
 
-Die Division durch das Intervall statt fest durch eine Stunde ist der einzige Grund, warum eine spätere Umstellung auf feinere Auflösung kein stiller Faktor-4-Fehler wird.
+Dass hier durch das konfigurierte Intervall gerechnet wird statt fest durch eine Stunde, ist der einzige Grund, warum eine spätere Umstellung auf feinere Auflösung kein stiller Faktor-4-Fehler wird. Bei 60 Minuten ist der Faktor 1 und die Formel entspricht dem bisherigen Verhalten.
 
 ### 3.4 Modell-Metadaten und Invalidierung
 
@@ -105,7 +105,7 @@ Jedes persistierte Modell trägt:
 {
   "pvlearn_version": "0.1.0",
   "feature_schema_version": 1,
-  "sklearn_version": "1.5.2",
+  "sklearn_version": "1.9.0",
   "weather_provider": "open-meteo",
   "interval_minutes": 60,
   "location": {"latitude": 49.45, "longitude": 11.08, "timezone": "Europe/Berlin"},
@@ -139,7 +139,7 @@ Open-Meteo kann 15 Minuten, aber wenn der Wechselrichter nur Stundenwerte meldet
 
 - `interval` als Pflichtfeld in Brain-Konfiguration und Modell-Metadaten, mit Invalidierung bei Abweichung (siehe 3.4)
 - Zeit-Features auf Minuten seit Mitternacht (siehe 3.2)
-- `power_period` aus dem Intervall abgeleitet (siehe 3.3)
+- `power_period` als `energy_wh * 60 / interval_minutes` statt fest über eine Stunde (siehe 3.3)
 - Aggregationslogik summiert Intervalle innerhalb eines Zeitraums, statt „eine Zeile = eine Stunde" anzunehmen
 - Der Prognose-Endpunkt gibt das Intervall in der Antwort mit an
 
