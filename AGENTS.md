@@ -68,12 +68,21 @@ pytest --cov=pvlearn --cov-report=xml:coverage.xml
 pytest tests/path/to/test_file.py
 ```
 
-### Commits
+### Commits and pull requests
 
 This repository enforces the Developer Certificate of Origin. Every commit needs a
 `Signed-off-by` trailer or the DCO check blocks the pull request — commit with `git commit -s`.
 To repair a branch where it is missing: `git rebase <base> --signoff` followed by
 `git push --force-with-lease`.
+
+**One pull request per phase or sub-phase of the roadmap, not per commit.** A phase lands as
+a single branch with however many commits it takes, reviewed and merged as one unit. Phase 0
+was built the other way round — a pull request per step — which produced eight of them for
+what is really one deliverable and made the phase impossible to review as a whole.
+
+Commits within a branch stay individually meaningful, so the branch reads as a sequence rather
+than one opaque change. Merges are squashed, which is why the pull request description carries
+the reasoning that survives into `main`'s history.
 
 ---
 
