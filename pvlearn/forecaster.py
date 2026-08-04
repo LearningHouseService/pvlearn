@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import cast
 
 from joblib import Memory, dump, load
-from numpy import percentile
+from numpy import ones_like
 from numpy.typing import NDArray
 from pandas import DataFrame, Series
 from sklearn import clone
@@ -360,6 +360,15 @@ class Forecaster:
 
 
 class PFISelector(BaseEstimator, TransformerMixin):
+    """Keeps the features whose permutation measurably hurts the model.
+
+    The criterion is absolute — importance above zero — not a quantile of the
+    candidates. A quantile makes a feature's fate depend on how many other
+    columns the weather provider happens to deliver, so the same plant would
+    select differently under Open-Meteo than under OpenWeatherMap. See
+    `docs/adr/0001-feature-selection-threshold.md`.
+    """
+
     def __init__(self, estimator, n_repeats=10):
         self.estimator = estimator
         self.n_repeats = n_repeats
@@ -385,11 +394,12 @@ class PFISelector(BaseEstimator, TransformerMixin):
             results["importances_mean"],
         )
 
-        threshold_value = percentile(self.feature_importances_, 75)
-
-        selected = self.feature_importances_ > threshold_value
+        selected = self.feature_importances_ > 0
         if not selected.any():
-            selected = self.feature_importances_ >= threshold_value
+            # Nothing helped measurably. Keeping everything is the safe read of
+            # that: it means the importance estimate is uninformative, not that
+            # the features are.
+            selected = ones_like(self.feature_importances_, dtype=bool)
 
         important_indices = cast(list[bool], selected.tolist())
         self.important_indices_ = important_indices
