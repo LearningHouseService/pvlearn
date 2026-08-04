@@ -3,7 +3,7 @@ name = "pvlearn"
 dynamic = ["version"]
 description = "Self-learning PV production forecast library and service — teach your home to predict its own solar production."
 readme = { file = "README.md", content-type = "text/markdown" }
-requires-python = ">=3.11,<4"
+requires-python = ">=3.12,<4"
 license = "MIT"
 authors = [
     { name = "Johannes Ott", email = "info@johannes-ott.net" }
@@ -15,17 +15,31 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
     "Natural Language :: English",
     "Programming Language :: Python :: 3 :: Only",
-    "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
 ]
+# Runtime and optional dependencies are pinned exactly, matching solaredge2mqtt
+# and learninghouse. Updates arrive as individual dependabot pull requests that
+# run the full test suite, rather than silently on whatever day a transitive
+# resolve changes. The build-system requirements below stay on lower bounds:
+# they shape how the wheel is built, not how the installed package behaves, and
+# pinning them breaks builds on newer setuptools for no reproducibility gain.
+#
+# scikit-learn is the one pin that is load-bearing rather than merely tidy: the
+# frozen Phase 0 baseline is only reproducible against 1.9.0. Verified that the
+# baseline reproduces bit-identically across numpy 2.4.6/2.5.1, pandas
+# 3.0.3/3.0.5 and scipy 1.17.1/1.18.0 as long as scikit-learn does not move, so
+# a scikit-learn bump must regenerate the baseline and say so in its changelog.
+#
+# numpy 2.5 and scipy 1.18 require Python 3.12, which is why 3.11 is not
+# supported.
 dependencies = [
-    "numpy>=2.4",
-    "pandas>=2.2",
-    "scikit-learn>=1.9",
-    "scipy>=1.17",
-    "pydantic>=2.13",
-    "astral>=3.2",
+    "numpy==2.5.1",
+    "pandas==3.0.5",
+    "scikit-learn==1.9.0",
+    "scipy==1.18.0",
+    "pydantic==2.13.4",
+    "astral==3.2",
 ]
 
 [project.urls]
@@ -36,23 +50,23 @@ Issues = "https://github.com/LearningHouseService/pvlearn/issues"
 
 [project.optional-dependencies]
 dev = [
-    "setuptools-scm[toml]>=8",
-    "ruff",
-    "tomli",
-    "pyright",
-    "pytest>=9.1",
-    "pytest-asyncio>=1.4",
-    "pytest-cov>=7.1",
-    "pytest-xdist>=3.8",
+    "setuptools-scm[toml]==10.2.1",
+    "ruff==0.16.1",
+    "tomli==2.4.1",
+    "pyright==1.1.411",
+    "pytest==9.1.1",
+    "pytest-asyncio==1.4.0",
+    "pytest-cov==7.1.0",
+    "pytest-xdist==3.8.0",
     # Reading the Parquet reference fixture. The library itself takes DataFrames
     # from its caller and never touches Parquet, so this stays a test dependency.
-    "pyarrow>=18",
+    "pyarrow==25.0.0",
 ]
 service = [
-    "fastapi>=0.118",
-    "uvicorn[standard]>=0.38",
-    "httpx>=0.28",
-    "pyjwt>=2.13",
+    "fastapi==0.141.1",
+    "uvicorn[standard]==0.52.1",
+    "httpx==0.28.1",
+    "pyjwt==2.13.0",
 ]
 
 [build-system]
@@ -75,7 +89,7 @@ fallback_version = "0.0.0"
 
 [tool.ruff]
 line-length = 88
-target-version = "py311"
+target-version = "py312"
 
 [tool.ruff.lint]
 select = ["E", "F", "I"]

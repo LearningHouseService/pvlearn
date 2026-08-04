@@ -81,16 +81,21 @@ Bleiben inhaltlich wie bisher (`TimeEncoder`, `SunEncoder`), aber mit zwei Ände
 
 - `SunEncoder` bekommt statt eines `LocationSettings`-Objekts primitive, serialisierbare Parameter: `latitude: float`, `longitude: float`, `timezone: str`. Andernfalls brechen `sklearn.clone()` und Pickling, und Multi-Tenancy ist nicht möglich.
 - `tzlocal.get_localzone()` auf Modulebene entfällt. Die Zeitzone wird pro Brain explizit gesetzt. Ein Service, der Anlagen in mehreren Zeitzonen bedient, kann sich keine Prozess-globale TZ leisten.
+- `TimeEncoder` kodiert die Tageszeit als **Minuten seit Mitternacht**, nicht als Stunde. Bei stündlicher Auflösung ist das Ergebnis identisch; bei feinerer Auflösung wären `hour_sin/cos` für alle Intervalle innerhalb einer Stunde gleich und das Feature damit wertlos. Siehe 3.5.
 
 Zusätzlich zu prüfen: `ephem` und `astral` werden derzeit parallel verwendet. Eine der beiden Abhängigkeiten sollte entfallen; `astral` deckt Azimut, Elevation und Sonnenauf-/-untergang vollständig ab.
 
 ### 3.3 Zielgröße
 
-**Nur noch ein Modell: Energie pro Stunde in Wh.**
+**Nur noch ein Modell: Energie pro Intervall in Wh.**
 
 Das bisherige Power-Modell entfällt. Begründung: Beide Modelle trainieren auf identischen Features, und bei Stundenauflösung ist die mittlere Leistung numerisch identisch zur Stundenenergie. Der Wegfall halbiert Trainingszeit, Cache-Bedarf und Wartungsaufwand.
 
-`power_period` wird **weiterhin publiziert**, abgeleitet als `energy_wh / 1h`. Damit ist der Wegfall kein Breaking Change für MQTT-Konsumenten. Was verloren geht, ist die Momentanleistung zum Zeitstempel; das braucht weder das Energy Dashboard noch ein bekannter Automations-Use-Case. Im Changelog als „jetzt Stundenmittel statt Momentanwert" dokumentieren.
+Auf dem Referenzdatensatz aus Phase 0 ist das empirisch bestätigt: MAE 620,88 Wh für das Energiemodell gegenüber 624,93 W für das Leistungsmodell, R² 0,886 gegenüber 0,885. Die beiden Modelle liegen unter einem Prozent auseinander.
+
+`power_period` wird **weiterhin publiziert**, abgeleitet als `energy_wh * 60 / interval_minutes`. Damit ist der Wegfall kein Breaking Change für MQTT-Konsumenten. Was verloren geht, ist die Momentanleistung zum Zeitstempel; das braucht weder das Energy Dashboard noch ein bekannter Automations-Use-Case. Im Changelog als „jetzt Intervallmittel statt Momentanwert" dokumentieren.
+
+Dass hier durch das konfigurierte Intervall gerechnet wird statt fest durch eine Stunde, ist der einzige Grund, warum eine spätere Umstellung auf feinere Auflösung kein stiller Faktor-4-Fehler wird. Bei 60 Minuten ist der Faktor 1 und die Formel entspricht dem bisherigen Verhalten.
 
 ### 3.4 Modell-Metadaten und Invalidierung
 
@@ -100,8 +105,9 @@ Jedes persistierte Modell trägt:
 {
   "pvlearn_version": "0.1.0",
   "feature_schema_version": 1,
-  "sklearn_version": "1.5.2",
+  "sklearn_version": "1.9.0",
   "weather_provider": "open-meteo",
+  "interval_minutes": 60,
   "location": {"latitude": 49.45, "longitude": 11.08, "timezone": "Europe/Berlin"},
   "trained_at": "2026-08-03T12:20:00+02:00",
   "training_rows": 1440,
@@ -110,10 +116,44 @@ Jedes persistierte Modell trägt:
 }
 ```
 
-Beim Laden gilt hart: **Stimmt `feature_schema_version`, die sklearn-Minor-Version, der Provider oder die Location nicht überein, wird das Modell verworfen und neu trainiert.** Kein Migrationsversuch, kein Best-Effort-Laden. Stumme Fehlprognosen durch ein Modell, das auf einem anderen Feature-Set trainiert wurde, sind praktisch nicht debugbar.
+Beim Laden gilt hart: **Stimmt `feature_schema_version`, die sklearn-Minor-Version, der Provider, das Intervall oder die Location nicht überein, wird das Modell verworfen und neu trainiert.** Kein Migrationsversuch, kein Best-Effort-Laden. Stumme Fehlprognosen durch ein Modell, das auf einem anderen Feature-Set trainiert wurde, sind praktisch nicht debugbar.
+
+Zur sklearn-Version: die Phase-0-Baseline ist nur gegen exakt die Version reproduzierbar, unter der sie entstanden ist. `pvlearn` pinnt scikit-learn deshalb exakt (siehe 6.6); ein Bump verschiebt still jede Prognose und erfordert eine neu erzeugte Baseline.
 
 **Persistenzformat:** joblib/Pickle. ONNX wurde geprüft und verworfen — `CyclicalEncoder`, `TimeEncoder`, `SunEncoder` und `PFISelector` sind Custom-Transformer und bräuchten je einen eigenen Shape Calculator plus Converter. Der ursprüngliche Motivator (leichtgewichtige Inferenz in der HA-Integration) entfällt ohnehin, weil die Integration in der Zielarchitektur ein reiner REST-Client ist.
 
+
+### 3.5 Prognoseauflösung
+
+**Entschieden: Das MVP rechnet stündlich. Das Datenmodell hält feinere Auflösungen offen, ohne sie zu implementieren.**
+
+Das Intervall ist **keine Provider-Eigenschaft**, sondern eine Brain-Eigenschaft, begrenzt von beiden Seiten:
+
+```
+interval = min(was der Provider liefert, was der Client an Messwerten pusht)
+```
+
+Open-Meteo kann 15 Minuten, aber wenn der Wechselrichter nur Stundenwerte meldet, nützt das nichts. OpenWeatherMap kann 15 Minuten grundsätzlich nicht. Als Provider-Attribut modelliert entstehen sofort widersprüchliche Zustände.
+
+**Was jetzt intervall-fähig gebaut wird** — kostet zum jetzigen Zeitpunkt nichts, wäre später eine Migration, die jedes trainierte Modell invalidiert:
+
+- `interval` als Pflichtfeld in Brain-Konfiguration und Modell-Metadaten, mit Invalidierung bei Abweichung (siehe 3.4)
+- Zeit-Features auf Minuten seit Mitternacht (siehe 3.2)
+- `power_period` als `energy_wh * 60 / interval_minutes` statt fest über eine Stunde (siehe 3.3)
+- Aggregationslogik summiert Intervalle innerhalb eines Zeitraums, statt „eine Zeile = eine Stunde" anzunehmen
+- Der Prognose-Endpunkt gibt das Intervall in der Antwort mit an
+
+**Warum nicht sofort implementieren:**
+
+*Keine Messdaten.* solaredge2mqtt schreibt stündlich. Eine Umstellung erfordert eine Änderung der Datenerfassung und danach Monate Sammelzeit. Referenzdatensatz und Baseline aus Phase 0 sind stündlich — für einen 15-Minuten-Pfad existiert keine Baseline und damit keine Abnahme.
+
+*Zwei Codepfade ab Tag eins.* OWM-Bestandsnutzer bleiben zwingend stündlich. Jede Aggregation, jede Invalidierungsregel und jeder Test existierte doppelt, bevor überhaupt ein Release draußen ist.
+
+*Die Interpolationsfalle.* Open-Meteo liefert `minutely_15` nativ nur in Mitteleuropa (ICON-D2, AROME) und Nordamerika (HRRR), dort inklusive Strahlung. Außerhalb dieser Abdeckung — geografisch wie jenseits des Modellhorizonts — gibt die API interpolierte Stundenwerte zurück. Das ergibt viermal so viele Zeilen mit derselben Information, und die künstlich erzeugten Nachbarzeilen sind stark autokorreliert. Ein naives Holdout hält so ein Modell für besser, als es ist. Wer das umsetzt, muss die native Abdeckung prüfen und bei Interpolation ablehnen statt stillschweigend zu trainieren.
+
+*Rechenaufwand.* Vier Mal so viele Trainingszeilen verschärfen Punkt 6.4 unmittelbar.
+
+Frühestens Phase 6, konsistent mit der Gegenmaßnahme zum Scope-Creep-Risiko in Kapitel 7.
 ---
 
 ## 4. Phasenplan
@@ -174,7 +214,8 @@ Ohne diesen Schritt ist Phase 1a nicht verifizierbar.
 - Feature-Konstanten auf das kanonische Schema aus Kapitel 3.1 umstellen.
 - OWM-Adapter in solaredge2mqtt: mappt `OpenWeatherMapForecastData` auf das kanonische Schema. `weather_id` → WMO-Mapping.
 - `SunEncoder` auf primitive Parameter umstellen, TZ explizit.
-- `power_period` aus dem Energiemodell ableiten.
+- `power_period` aus dem Energiemodell ableiten, über das konfigurierte Intervall statt fest über eine Stunde.
+- `interval` in Konfiguration und Modell-Metadaten einführen, vorerst ausschließlich mit dem Wert 60 Minuten (siehe 3.5).
 - Metriken beim Training berechnen und in den Metadaten ablegen (MAE, RMSE, R² auf einem `TimeSeriesSplit`-Holdout).
 - `feature_schema_version = 1` einführen, Invalidierungslogik implementieren.
 
@@ -230,12 +271,12 @@ DELETE /api/v1/brains/{id}
 POST   /api/v1/brains/{id}/measurements      [{timestamp, energy_wh}, ...]
 POST   /api/v1/brains/{id}/train             Training anstoßen (async, 202)
 GET    /api/v1/brains/{id}/status            is_trained, rows, last_training, metrics, features
-GET    /api/v1/brains/{id}/forecast          ?days=2 → Stundenwerte + Aggregate
+GET    /api/v1/brains/{id}/forecast          ?days=2 → Intervallwerte + Aggregate
 GET    /api/v1/providers                     verfügbare Provider + max. Horizont
 GET    /health
 ```
 
-Der Prognosehorizont ist providerabhängig und wird nicht hart kodiert: OpenWeatherMap One Call liefert 48 h stündlich, Open-Meteo bis zu 16 Tage. `GET /forecast` liefert maximal `min(days, provider_horizon)` und meldet den tatsächlichen Horizont im Response mit.
+Der Prognosehorizont ist providerabhängig und wird nicht hart kodiert: OpenWeatherMap One Call liefert 48 h stündlich, Open-Meteo bis zu 16 Tage. `GET /forecast` liefert maximal `min(days, provider_horizon)` und meldet den tatsächlichen Horizont im Response mit, zusammen mit dem Intervall der gelieferten Werte.
 
 **Auth:** API-Key-Mechanismus aus `learninghouse` übernehmen.
 
@@ -332,13 +373,14 @@ Mindestumfang vor dem ersten öffentlichen Release der Library:
 
 ## 6. Offene Entscheidungen
 
-Diese Punkte sind noch nicht entschieden und sollten vor Beginn der jeweiligen Phase geklärt werden:
+Diese Punkte sollten vor Beginn der jeweiligen Phase geklärt werden. Entschiedene Punkte bleiben mit Verweis auf die Begründung stehen, statt gelöscht zu werden.
 
-1. **Prognoseintervall:** Bleibt es bei stündlicher Auflösung, oder sollen 15-Minuten-Werte möglich sein? Open-Meteo liefert `minutely_15` inklusive Strahlung. Betrifft das Datenmodell fundamental und sollte vor Phase 1b entschieden werden.
+1. ~~**Prognoseintervall**~~ — **entschieden**, siehe 3.5. Das MVP rechnet stündlich, das Datenmodell hält feinere Auflösungen offen. Eine Implementierung kommt frühestens in Phase 6 und setzt voraus, dass die Messdatenerfassung auf der Client-Seite mitzieht.
 2. **Unsicherheitsbänder:** `HistGradientBoostingRegressor` kann über `loss="quantile"` Quantilsprognosen liefern. Ein p10/p50/p90-Band wäre für Batteriesteuerung deutlich wertvoller als ein Punktwert — kostet aber drei Modelle statt einem, was der Konsolidierung aus 3.3 entgegenläuft. Kandidat für Phase 6.
 3. **Mehrere Strings pro Anlage:** Ost-West-Anlagen könnten von getrennten Modellen je Ausrichtung profitieren. Erfordert, dass der Client getrennte Energiewerte liefert. Als optionales Feature denkbar; erhöht die Komplexität der API spürbar.
 4. **Hyperparameter-Tuning im Service:** `GridSearchCV` über neun Kombinationen ist auf einem Raspberry Pi grenzwertig. Entweder deaktivieren, auf gelegentlich (wöchentlich) begrenzen oder auf `HalvingGridSearchCV` wechseln.
 5. **Rückwärtsbefüllung:** Soll die HA-Integration beim Setup historische Werte aus dem Recorder nachliefern können? Das würde die Wartezeit bis zur ersten Prognose drastisch verkürzen — allerdings fehlen für die Vergangenheit die passenden Wetter-*Vorhersagen*. Open-Meteo bietet eine Historical-Forecast-API, die genau das liefert (archivierte Vorhersagen statt Reanalyse). Technisch die eleganteste Lösung des Kaltstartproblems, aber nicht trivial.
+6. ~~**scikit-learn-Obergrenze**~~ — **entschieden**. Alle Abhängigkeiten sind in `pyproject.toml` exakt gepinnt, wie in `solaredge2mqtt` und `learninghouse`. Empirisch geprüft: die Baseline reproduziert bitidentisch über numpy 2.4.6/2.5.1, pandas 3.0.3/3.0.5 und scipy 1.17.1/1.18.0 hinweg, solange scikit-learn auf 1.9.0 bleibt. Damit ist scikit-learn der einzige Pin, an dem die Reproduzierbarkeit tatsächlich hängt — ein Bump erfordert zwingend eine neu erzeugte Baseline und einen Changelog-Eintrag.
 
 ---
 
@@ -373,4 +415,4 @@ P4  HACS-Integration + Energy-Dashboard-Provider
 P5  Deprecation solaredge2mqtt_forecast
 ```
 
-Die drei Entscheidungen, die am schwersten zu revidieren sind und deshalb die meiste Sorgfalt verdienen: das **Feature-Schema** (Kapitel 3.1), die **Trainingsdaten-Semantik** (Phase 2) und die **Prognoseauflösung** (offener Punkt 6.1).
+Die drei Entscheidungen, die am schwersten zu revidieren sind und deshalb die meiste Sorgfalt verdienen: das **Feature-Schema** (Kapitel 3.1), die **Trainingsdaten-Semantik** (Phase 2) und die **Prognoseauflösung** (Kapitel 3.5). Die dritte ist inzwischen entschieden; entscheidend bleibt, dass das Intervall von Anfang an ein explizites Feld ist und nirgends implizit als eine Stunde angenommen wird.
