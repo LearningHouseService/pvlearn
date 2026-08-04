@@ -1,24 +1,38 @@
-"""Tests for pvlearn.forecaster, ported from solaredge2mqtt's ForecastService.
+"""Tests for pvlearn.forecaster.
 
-Only the parts that moved to pvlearn are covered here: `Forecaster`,
-`PFISelector`, and `ForecasterType`. Everything event-bus/InfluxDB/MQTT-shaped
-stayed behind in solaredge2mqtt's `ForecastService` and is out of scope.
+Only the parts that moved to pvlearn are covered here: `Forecaster` and
+`PFISelector`. Everything event-bus/InfluxDB/MQTT-shaped stayed behind in
+solaredge2mqtt's `ForecastService` and is out of scope.
 """
 
+import json
 from datetime import datetime, timedelta, timezone
+from typing import cast
 from unittest.mock import MagicMock, patch
 
+import numpy as np
 import pandas as pd
 import pytest
 from pandas import DataFrame, Series
 from sklearn.compose import ColumnTransformer
 from sklearn.ensemble import HistGradientBoostingRegressor
+from sklearn.exceptions import NotFittedError
 from sklearn.pipeline import Pipeline
 
 from pvlearn.config import ForecasterConfig
-from pvlearn.exceptions import InsufficientDataError, ModelNotTrainedError
-from pvlearn.forecaster import Forecaster, ForecasterType, PFISelector
+from pvlearn.exceptions import (
+    InsufficientDataError,
+    ModelNotTrainedError,
+    SchemaMismatchError,
+)
+from pvlearn.forecaster import (
+    METADATA_FILENAME,
+    MODEL_FILENAME,
+    Forecaster,
+    PFISelector,
+)
 from pvlearn.location import Location
+from pvlearn.metadata import ModelMetrics
 
 LOCAL_TZ = "Europe/Berlin"
 
@@ -27,187 +41,190 @@ def make_location(latitude: float = 52.52, longitude: float = 13.405) -> Locatio
     return Location(latitude=latitude, longitude=longitude, timezone=LOCAL_TZ)
 
 
-class TestForecasterType:
-    def test_target_column_matches_value(self):
-        assert ForecasterType.ENERGY.target_column == "energy"
-        assert ForecasterType.POWER.target_column == "power"
+def make_config(**overrides) -> ForecasterConfig:
+    return ForecasterConfig(
+        **{"interval_minutes": 60, "weather_provider": "openweathermap", **overrides}
+    )
 
-    def test_prepare_value_clamps_negative_to_zero(self):
-        assert ForecasterType.ENERGY.prepare_value(-5) == 0
-        assert ForecasterType.POWER.prepare_value(-5) == 0
 
-    def test_prepare_value_energy_divides_by_thousand(self):
-        assert ForecasterType.ENERGY.prepare_value(1234) == 1.234
+def make_training_data(rows: int = 100, weather: bool = True) -> DataFrame:
+    columns: dict[str, list] = {
+        "time": [datetime.now(timezone.utc) + timedelta(hours=i) for i in range(rows)],
+        "energy": [100.0 + i for i in range(rows)],
+    }
 
-    def test_prepare_value_power_rounds_to_int(self):
-        assert ForecasterType.POWER.prepare_value(1234.6) == 1235
-        assert isinstance(ForecasterType.POWER.prepare_value(1234.6), int)
+    if weather:
+        columns.update(
+            {
+                "cloud_cover": [50] * rows,
+                "temperature": [25.0] * rows,
+                "relative_humidity": [50] * rows,
+                "surface_pressure": [1013] * rows,
+                "wind_speed": [5.0] * rows,
+                "wind_direction": [180] * rows,
+                "uv_index": [5.0] * rows,
+                "precipitation_probability": [0.1] * rows,
+                "condition_code": [800] * rows,
+            }
+        )
+
+    data = DataFrame(columns)
+    data["time"] = data["time"].astype(pd.DatetimeTZDtype(unit="ns", tz=LOCAL_TZ))
+    return data
+
+
+def make_metrics() -> ModelMetrics:
+    return ModelMetrics(mae=1.0, rmse=2.0, r2=0.9)
+
+
+def make_mock_pipeline() -> MagicMock:
+    pipeline = MagicMock()
+    pipeline.named_steps = {
+        "preprocessor": MagicMock(
+            get_feature_names_out=MagicMock(return_value=["f1"]),
+        ),
+        "feature_selector": MagicMock(important_features_=["f1"]),
+    }
+    return pipeline
+
+
+class TestPrepareValue:
+    def test_clamps_negative_to_zero(self):
+        assert Forecaster.prepare_value(-5) == 0
+
+    def test_rounds_to_whole_watt_hours(self):
+        assert Forecaster.prepare_value(1234.6) == 1235
+        assert isinstance(Forecaster.prepare_value(1234.6), int)
+
+    def test_does_not_convert_to_kilowatt_hours(self):
+        """Phase 1b publishes Wh; kWh was the old power/energy split's doing."""
+        assert Forecaster.prepare_value(1234) == 1234
 
 
 class TestForecasterInit:
     def test_forecaster_init(self):
         location = make_location()
-        config = ForecasterConfig()
+        config = make_config()
 
-        forecaster = Forecaster(ForecasterType.ENERGY, location, config)
+        forecaster = Forecaster(location, config)
 
-        assert forecaster.typed == ForecasterType.ENERGY
         assert forecaster.location == location
+        assert forecaster.interval_minutes == 60
         assert forecaster.enable_hyperparameter_tuning is False
         assert forecaster.model_pipeline is None
+        assert forecaster.metadata is None
 
     def test_forecaster_init_with_hyperparameter_tuning(self):
-        location = make_location()
-        config = ForecasterConfig(hyperparametertuning=True)
-
-        forecaster = Forecaster(ForecasterType.POWER, location, config)
+        forecaster = Forecaster(make_location(), make_config(hyperparametertuning=True))
 
         assert forecaster.enable_hyperparameter_tuning is True
 
     def test_forecaster_is_trained_false_initially(self):
-        forecaster = Forecaster(
-            ForecasterType.ENERGY, make_location(), ForecasterConfig()
-        )
+        forecaster = Forecaster(make_location(), make_config())
 
         assert forecaster.is_trained is False
 
     def test_forecaster_is_trained_true_after_training(self):
-        forecaster = Forecaster(
-            ForecasterType.ENERGY, make_location(), ForecasterConfig()
-        )
+        forecaster = Forecaster(make_location(), make_config())
         forecaster.model_pipeline = MagicMock()
 
         assert forecaster.is_trained is True
 
     def test_forecaster_no_memory_when_caching_disabled(self):
-        forecaster = Forecaster(
-            ForecasterType.ENERGY, make_location(), ForecasterConfig()
-        )
+        forecaster = Forecaster(make_location(), make_config())
 
         assert forecaster.memory is None
+
+    def test_minimum_training_rows_follows_the_interval(self):
+        forecaster = Forecaster(make_location(), make_config())
+
+        assert forecaster.minimum_training_rows == 60
 
 
 class TestForecasterTrain:
     def test_train_raises_with_insufficient_data(self):
-        forecaster = Forecaster(
-            ForecasterType.ENERGY, make_location(), ForecasterConfig()
-        )
-
-        data = DataFrame(
-            {
-                "time": [datetime.now() for _ in range(30)],
-                "energy": [100.0] * 30,
-                "clouds": [50] * 30,
-            }
-        )
+        forecaster = Forecaster(make_location(), make_config())
 
         with pytest.raises(InsufficientDataError, match="at least 60 hours"):
-            forecaster.train(data)
+            forecaster.train(make_training_data(rows=30))
 
     def test_train_creates_pipeline(self):
-        forecaster = Forecaster(
-            ForecasterType.ENERGY, make_location(), ForecasterConfig()
-        )
+        forecaster = Forecaster(make_location(), make_config())
 
-        data = DataFrame(
-            {
-                "time": [
-                    datetime.now(timezone.utc) + timedelta(hours=i) for i in range(100)
-                ],
-                "energy": [100.0 + i for i in range(100)],
-                "power": [1000 + i * 10 for i in range(100)],
-                "clouds": [50] * 100,
-                "temp": [25.0] * 100,
-                "humidity": [50] * 100,
-                "pressure": [1013] * 100,
-                "wind_speed": [5.0] * 100,
-                "wind_deg": [180] * 100,
-                "uvi": [5.0] * 100,
-                "pop": [0.1] * 100,
-                "weather_id": [800] * 100,
-                "weather_main": ["Clear"] * 100,
-            }
-        )
-        data["time"] = data["time"].astype(pd.DatetimeTZDtype(unit="ns", tz=LOCAL_TZ))
-
-        forecaster.train(data)
+        forecaster.train(make_training_data())
 
         assert forecaster.model_pipeline is not None
         assert forecaster.is_trained is True
 
+    def test_train_records_metadata(self):
+        forecaster = Forecaster(make_location(), make_config())
+        data = make_training_data()
+
+        forecaster.train(data)
+
+        assert forecaster.metadata is not None
+        assert forecaster.metadata.training_rows == len(data)
+        assert forecaster.metadata.weather_provider == "openweathermap"
+        assert forecaster.metadata.interval_minutes == 60
+        assert forecaster.metadata.location == forecaster.location
+        assert forecaster.metadata.selected_features
+
+    def test_train_records_holdout_metrics(self):
+        forecaster = Forecaster(make_location(), make_config())
+
+        forecaster.train(make_training_data())
+
+        assert forecaster.metadata is not None
+        metrics = forecaster.metadata.metrics
+        assert metrics.mae >= 0
+        assert metrics.rmse >= metrics.mae
+
     def test_train_uses_hyperparameter_tuning_when_enabled(self):
-        config = ForecasterConfig(hyperparametertuning=True)
-        forecaster = Forecaster(ForecasterType.ENERGY, make_location(), config)
-
-        data = DataFrame(
-            {
-                "time": [
-                    datetime.now(timezone.utc) + timedelta(hours=i) for i in range(70)
-                ],
-                "energy": [100.0 + i for i in range(70)],
-            }
-        )
-        data["time"] = data["time"].astype(pd.DatetimeTZDtype(unit="ns", tz=LOCAL_TZ))
-
-        prepared_pipeline = MagicMock()
-        tuned_pipeline = MagicMock()
-        tuned_pipeline.named_steps = {
-            "preprocessor": MagicMock(
-                get_feature_names_out=MagicMock(return_value=["f1"])
-            ),
-            "feature_selector": MagicMock(important_features_=["f1"]),
-        }
+        forecaster = Forecaster(make_location(), make_config(hyperparametertuning=True))
+        tuned_pipeline = make_mock_pipeline()
 
         with (
             patch.object(
-                forecaster, "_prepare_model_pipeline", return_value=prepared_pipeline
+                forecaster, "_prepare_model_pipeline", return_value=MagicMock()
             ),
             patch.object(
                 forecaster, "_hyperparametertuning", return_value=tuned_pipeline
             ) as mock_tune,
+            patch.object(forecaster, "_evaluate", return_value=make_metrics()),
         ):
-            forecaster.train(data)
+            forecaster.train(make_training_data(rows=70, weather=False))
 
         mock_tune.assert_called_once()
         tuned_pipeline.fit.assert_called_once()
 
     def test_train_calls_cleanup_cache(self):
-        forecaster = Forecaster(
-            ForecasterType.ENERGY, make_location(), ForecasterConfig()
-        )
-
-        data = DataFrame(
-            {
-                "time": [
-                    datetime.now(timezone.utc) + timedelta(hours=i) for i in range(70)
-                ],
-                "energy": [100.0 + i for i in range(70)],
-            }
-        )
-        data["time"] = data["time"].astype(pd.DatetimeTZDtype(unit="ns", tz=LOCAL_TZ))
-
-        prepared_pipeline = MagicMock()
-        prepared_pipeline.named_steps = {
-            "preprocessor": MagicMock(
-                get_feature_names_out=MagicMock(return_value=["f1"])
-            ),
-            "feature_selector": MagicMock(important_features_=["f1"]),
-        }
+        forecaster = Forecaster(make_location(), make_config())
 
         with (
             patch.object(
-                forecaster, "_prepare_model_pipeline", return_value=prepared_pipeline
+                forecaster, "_prepare_model_pipeline", return_value=make_mock_pipeline()
             ),
+            patch.object(forecaster, "_evaluate", return_value=make_metrics()),
             patch.object(forecaster, "_cleanup_cache") as mock_cleanup,
         ):
-            forecaster.train(data)
+            forecaster.train(make_training_data(rows=70, weather=False))
 
         mock_cleanup.assert_called_once()
 
+    def test_evaluate_scores_a_copy_of_the_pipeline(self):
+        """The kept model must see the holdout too, so evaluation clones."""
+        forecaster = Forecaster(make_location(), make_config())
+        data = make_training_data()
+        pipeline = forecaster._prepare_model_pipeline(data.columns.to_list())
+
+        metrics = forecaster._evaluate(data, cast(Series, data["energy"]), pipeline)
+
+        assert metrics.mae >= 0
+        with pytest.raises(NotFittedError):
+            pipeline.predict(data)
+
     def test_cleanup_cache_calls_reduce_size_when_memory_available(self):
-        forecaster = Forecaster(
-            ForecasterType.ENERGY, make_location(), ForecasterConfig()
-        )
+        forecaster = Forecaster(make_location(), make_config())
         forecaster.memory = MagicMock()
 
         forecaster._cleanup_cache()
@@ -217,9 +234,7 @@ class TestForecasterTrain:
         )
 
     def test_cleanup_cache_noop_without_memory(self):
-        forecaster = Forecaster(
-            ForecasterType.ENERGY, make_location(), ForecasterConfig()
-        )
+        forecaster = Forecaster(make_location(), make_config())
 
         forecaster._cleanup_cache()  # must not raise
 
@@ -229,9 +244,7 @@ class TestForecasterTrain:
         A full preprocessor would make this as expensive as real training;
         param_grid only touches the "model" step, so a bare estimator is enough.
         """
-        forecaster = Forecaster(
-            ForecasterType.ENERGY, make_location(), ForecasterConfig()
-        )
+        forecaster = Forecaster(make_location(), make_config())
         data = DataFrame({"x": range(30)})
         y_vector = Series(range(30), dtype=float)
         pipeline = Pipeline(
@@ -245,22 +258,16 @@ class TestForecasterTrain:
 
 
 class TestForecasterPredict:
-    @pytest.mark.asyncio
     async def test_predict_raises_when_not_trained(self):
-        forecaster = Forecaster(
-            ForecasterType.ENERGY, make_location(), ForecasterConfig()
-        )
+        forecaster = Forecaster(make_location(), make_config())
 
         data = DataFrame({"time": [datetime.now()], "energy": [100.0]})
 
         with pytest.raises(ModelNotTrainedError, match="not been trained"):
             await forecaster.predict(data)
 
-    @pytest.mark.asyncio
     async def test_predict_returns_predictions(self):
-        forecaster = Forecaster(
-            ForecasterType.ENERGY, make_location(), ForecasterConfig()
-        )
+        forecaster = Forecaster(make_location(), make_config())
 
         mock_pipeline = MagicMock()
         mock_pipeline.predict.return_value = [100.0, 150.0]
@@ -273,16 +280,13 @@ class TestForecasterPredict:
 
         result = await forecaster.predict(data)
 
-        assert "energy" in result.columns
+        assert result["energy"].tolist() == [100, 150]
         mock_pipeline.predict.assert_called_once()
 
-    @pytest.mark.asyncio
     async def test_predict_handles_tuple_predictions(self):
-        forecaster = Forecaster(
-            ForecasterType.ENERGY, make_location(), ForecasterConfig()
-        )
+        forecaster = Forecaster(make_location(), make_config())
         mock_pipeline = MagicMock()
-        mock_pipeline.predict.return_value = ([100.0, 200.0],)
+        mock_pipeline.predict.return_value = ([100.0, -200.0],)
         forecaster.model_pipeline = mock_pipeline
         forecaster.training_completed.set()
 
@@ -292,7 +296,113 @@ class TestForecasterPredict:
 
         result = await forecaster.predict(data)
 
-        assert result["energy"].tolist() == [0.1, 0.2]
+        assert result["energy"].tolist() == [100, 0]
+
+    async def test_predict_keeps_the_input_index(self):
+        forecaster = Forecaster(make_location(), make_config())
+        mock_pipeline = MagicMock()
+        mock_pipeline.predict.return_value = [100.0, 150.0]
+        forecaster.model_pipeline = mock_pipeline
+        forecaster.training_completed.set()
+
+        data = DataFrame(
+            {"time": [datetime.now(), datetime.now() + timedelta(hours=1)]},
+            index=[7, 8],
+        )
+
+        result = await forecaster.predict(data)
+
+        assert result["energy"].tolist() == [100, 150]
+
+
+class TestForecasterPersistence:
+    def test_save_raises_without_a_trained_model(self, tmp_path):
+        forecaster = Forecaster(make_location(), make_config())
+
+        with pytest.raises(ModelNotTrainedError, match="no trained model"):
+            forecaster.save(tmp_path)
+
+    def test_save_writes_model_and_metadata(self, tmp_path):
+        forecaster = Forecaster(make_location(), make_config())
+        forecaster.train(make_training_data())
+
+        forecaster.save(tmp_path / "brain")
+
+        assert (tmp_path / "brain" / MODEL_FILENAME).is_file()
+        assert (tmp_path / "brain" / METADATA_FILENAME).is_file()
+
+    def test_load_restores_a_usable_forecaster(self, tmp_path):
+        location = make_location()
+        config = make_config()
+        original = Forecaster(location, config)
+        original.train(make_training_data())
+        original.save(tmp_path)
+
+        restored = Forecaster.load(tmp_path, location, config)
+
+        assert restored.is_trained is True
+        assert restored.training_completed.is_set()
+        assert restored.metadata == original.metadata
+
+    async def test_loaded_forecaster_predicts_the_same_values(self, tmp_path):
+        location = make_location()
+        config = make_config()
+        data = make_training_data()
+        original = Forecaster(location, config)
+        original.train(data)
+        original.save(tmp_path)
+
+        restored = Forecaster.load(tmp_path, location, config)
+
+        expected = await original.predict(data)
+        actual = await restored.predict(data)
+        assert actual["energy"].tolist() == expected["energy"].tolist()
+
+    def test_load_raises_when_nothing_is_persisted(self, tmp_path):
+        with pytest.raises(ModelNotTrainedError, match="No persisted model"):
+            Forecaster.load(tmp_path, make_location(), make_config())
+
+    def test_load_raises_when_only_the_model_is_persisted(self, tmp_path):
+        forecaster = Forecaster(make_location(), make_config())
+        forecaster.train(make_training_data())
+        forecaster.save(tmp_path)
+        (tmp_path / METADATA_FILENAME).unlink()
+
+        with pytest.raises(ModelNotTrainedError, match="No persisted model"):
+            Forecaster.load(tmp_path, make_location(), make_config())
+
+    def test_load_rejects_a_model_trained_at_another_location(self, tmp_path):
+        forecaster = Forecaster(make_location(), make_config())
+        forecaster.train(make_training_data())
+        forecaster.save(tmp_path)
+
+        with pytest.raises(SchemaMismatchError, match="location"):
+            Forecaster.load(tmp_path, make_location(latitude=48.1), make_config())
+
+    def test_load_rejects_a_model_trained_on_another_provider(self, tmp_path):
+        forecaster = Forecaster(make_location(), make_config())
+        forecaster.train(make_training_data())
+        forecaster.save(tmp_path)
+
+        with pytest.raises(SchemaMismatchError, match="weather_provider"):
+            Forecaster.load(
+                tmp_path,
+                make_location(),
+                make_config(weather_provider="open-meteo"),
+            )
+
+    def test_load_rejects_an_outdated_feature_schema(self, tmp_path):
+        forecaster = Forecaster(make_location(), make_config())
+        forecaster.train(make_training_data())
+        forecaster.save(tmp_path)
+
+        metadata_path = tmp_path / METADATA_FILENAME
+        metadata = json.loads(metadata_path.read_text())
+        metadata["feature_schema_version"] = 0
+        metadata_path.write_text(json.dumps(metadata))
+
+        with pytest.raises(SchemaMismatchError, match="feature_schema_version"):
+            Forecaster.load(tmp_path, make_location(), make_config())
 
 
 class TestForecasterExtractUsedColumns:
@@ -370,37 +480,88 @@ class TestPFISelector:
 
         assert selector.get_support() == [True, False, True]
 
+    def test_pfi_selector_keeps_every_feature_with_positive_importance(self):
+        """Absolute criterion, not a quantile of the candidates (ADR 0001)."""
+        selector = PFISelector(estimator=HistGradientBoostingRegressor(random_state=42))
+        rows = 200
+        data = DataFrame(
+            {
+                "signal": [float(i % 24) for i in range(rows)],
+                "noise": [0.0] * rows,
+            }
+        )
+        target = Series([float(i % 24) * 10 for i in range(rows)])
+
+        selector.fit(data, target)
+
+        assert "signal" in (selector.important_features_ or [])
+        assert "noise" not in (selector.important_features_ or [])
+
+    def test_pfi_selector_selection_does_not_depend_on_candidate_count(self):
+        """Adding a useless column must not evict a useful one."""
+        rows = 200
+        signal = [float(i % 24) for i in range(rows)]
+        target = Series([value * 10 for value in signal])
+        data = DataFrame({"signal": signal, "second": [v * 2 for v in signal]})
+
+        def select(frame: DataFrame) -> list[str]:
+            selector = PFISelector(
+                estimator=HistGradientBoostingRegressor(random_state=42)
+            )
+            selector.fit(frame, target)
+            return selector.important_features_ or []
+
+        without_extra = select(data)
+        with_extra = select(data.assign(padding=[0.0] * rows))
+
+        assert set(without_extra) <= set(with_extra)
+
+    def test_pfi_selector_keeps_all_features_when_none_helps(self):
+        """An uninformative importance estimate is not evidence against them."""
+        selector = PFISelector(estimator=MagicMock())
+        data = DataFrame({"a": [1, 2, 3], "b": [4, 5, 6]})
+
+        with patch(
+            "pvlearn.forecaster.permutation_importance",
+            return_value={"importances_mean": np.array([-0.1, -0.2])},
+        ):
+            selector.fit(data, Series([1.0, 2.0, 3.0]))
+
+        assert selector.important_features_ == ["a", "b"]
+
 
 class TestForecasterPreparePreprocessor:
     def test_prepare_preprocessor_returns_column_transformer(self):
-        forecaster = Forecaster(
-            ForecasterType.ENERGY, make_location(), ForecasterConfig()
-        )
+        forecaster = Forecaster(make_location(), make_config())
 
-        columns = ["time", "clouds", "temp", "weather_id", "wind_deg"]
+        columns = ["time", "cloud_cover", "temperature", "condition_code"]
         preprocessor = forecaster._prepare_preprocessor(columns)
 
         assert isinstance(preprocessor, ColumnTransformer)
 
+    def test_sun_encoder_gets_the_configured_interval(self):
+        forecaster = Forecaster(make_location(), make_config())
+
+        preprocessor = forecaster._prepare_preprocessor(["time"])
+
+        sun_encoder = dict(
+            (name, transformer) for name, transformer, _ in preprocessor.transformers
+        )["sun"]
+        assert sun_encoder.interval_minutes == 60
+
 
 class TestForecasterPrepareModelPipeline:
     def test_prepare_model_pipeline_returns_pipeline(self):
-        forecaster = Forecaster(
-            ForecasterType.ENERGY, make_location(), ForecasterConfig()
-        )
+        forecaster = Forecaster(make_location(), make_config())
 
-        columns = ["time", "clouds", "temp"]
-        pipeline = forecaster._prepare_model_pipeline(columns)
+        pipeline = forecaster._prepare_model_pipeline(["time", "cloud_cover"])
 
         assert isinstance(pipeline, Pipeline)
 
     def test_prepare_model_pipeline_has_steps(self):
-        forecaster = Forecaster(
-            ForecasterType.ENERGY, make_location(), ForecasterConfig()
-        )
+        forecaster = Forecaster(make_location(), make_config())
 
-        columns = ["time", "clouds", "temp"]
-        pipeline = forecaster._prepare_model_pipeline(columns)
+        pipeline = forecaster._prepare_model_pipeline(["time", "cloud_cover"])
 
         step_names = [name for name, _ in pipeline.steps]
         assert "preprocessor" in step_names

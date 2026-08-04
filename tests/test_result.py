@@ -1,65 +1,160 @@
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
+from zoneinfo import ZoneInfo
 
 from pvlearn.result import ForecastResult
 
-
-def make_energy_period(start: datetime, hours: int, wh_per_hour: int = 100):
-    return {start + timedelta(hours=i): wh_per_hour * (i + 1) for i in range(hours)}
+BERLIN = ZoneInfo("Europe/Berlin")
 
 
-def test_energy_today_sums_first_24_hours():
-    start = datetime(2024, 6, 15, 0, 0)
-    result = ForecastResult(energy_period=make_energy_period(start, 48))
-
-    with patch.object(ForecastResult, "_current_hour", return_value=0):
-        assert result.energy_today == sum(range(100, 100 * 25, 100))
-
-
-def test_energy_tomorrow_sums_second_24_hours():
-    start = datetime(2024, 6, 15, 0, 0)
-    period = make_energy_period(start, 48)
-    result = ForecastResult(energy_period=period)
-
-    expected = sum(list(period.values())[24:])
-    assert result.energy_tomorrow == expected
-
-
-def test_energy_current_hour_uses_current_hour_index():
-    start = datetime(2024, 6, 15, 0, 0)
-    period = make_energy_period(start, 24)
-    result = ForecastResult(energy_period=period)
-
-    with patch.object(ForecastResult, "_current_hour", return_value=5):
-        assert result.energy_current_hour == list(period.values())[5]
+def make_result(
+    start: datetime,
+    periods: int,
+    interval_minutes: int = 60,
+    wh_per_period: int = 100,
+    zone: str = "Europe/Berlin",
+) -> ForecastResult:
+    interval = timedelta(minutes=interval_minutes)
+    return ForecastResult(
+        interval_minutes=interval_minutes,
+        timezone=zone,
+        energy_period={
+            start + interval * i: wh_per_period * (i + 1) for i in range(periods)
+        },
+    )
 
 
-def test_energy_next_hour_rolls_into_tomorrow_at_hour_23():
-    start = datetime(2024, 6, 15, 0, 0)
-    period = make_energy_period(start, 48)
-    result = ForecastResult(energy_period=period)
-
-    with patch.object(ForecastResult, "_current_hour", return_value=23):
-        assert result.energy_next_hour == list(period.values())[24]
+def at(moment: datetime):
+    return patch.object(ForecastResult, "_now", staticmethod(lambda: moment))
 
 
-def test_energy_today_remaining_sums_from_current_hour():
-    start = datetime(2024, 6, 15, 0, 0)
-    period = make_energy_period(start, 24)
-    result = ForecastResult(energy_period=period)
+class TestDailyAggregates:
+    def test_energy_today_sums_the_current_date_only(self):
+        start = datetime(2024, 6, 15, 0, 0, tzinfo=BERLIN)
+        result = make_result(start, 48)
 
-    with patch.object(ForecastResult, "_current_hour", return_value=20):
-        assert result.energy_today_remaining == sum(list(period.values())[20:])
+        with at(datetime(2024, 6, 15, 0, 30, tzinfo=BERLIN)):
+            assert result.energy_today == sum(range(100, 100 * 25, 100))
+
+    def test_energy_tomorrow_sums_the_next_date(self):
+        start = datetime(2024, 6, 15, 0, 0, tzinfo=BERLIN)
+        result = make_result(start, 48)
+
+        with at(datetime(2024, 6, 15, 12, 0, tzinfo=BERLIN)):
+            assert result.energy_tomorrow == sum(range(2500, 100 * 49, 100))
+
+    def test_energy_today_ignores_periods_before_today(self):
+        """A series does not have to start at midnight of the current day."""
+        start = datetime(2024, 6, 14, 22, 0, tzinfo=BERLIN)
+        result = make_result(start, 4)
+
+        with at(datetime(2024, 6, 15, 0, 30, tzinfo=BERLIN)):
+            assert result.energy_today == 300 + 400
+
+    def test_energy_today_remaining_starts_at_the_current_hour(self):
+        start = datetime(2024, 6, 15, 0, 0, tzinfo=BERLIN)
+        result = make_result(start, 24)
+
+        with at(datetime(2024, 6, 15, 20, 45, tzinfo=BERLIN)):
+            assert result.energy_today_remaining == sum(range(2100, 2500, 100))
 
 
-def test_energy_next_hour_uses_next_hour_index_when_not_hour_23():
-    start = datetime(2024, 6, 15, 0, 0)
-    period = make_energy_period(start, 24)
-    result = ForecastResult(energy_period=period)
+class TestHourlyAggregates:
+    def test_energy_current_hour(self):
+        start = datetime(2024, 6, 15, 0, 0, tzinfo=BERLIN)
+        result = make_result(start, 24)
 
-    with patch.object(ForecastResult, "_current_hour", return_value=5):
-        assert result.energy_next_hour == list(period.values())[6]
+        with at(datetime(2024, 6, 15, 5, 20, tzinfo=BERLIN)):
+            assert result.energy_current_hour == 600
+
+    def test_energy_next_hour(self):
+        start = datetime(2024, 6, 15, 0, 0, tzinfo=BERLIN)
+        result = make_result(start, 24)
+
+        with at(datetime(2024, 6, 15, 5, 20, tzinfo=BERLIN)):
+            assert result.energy_next_hour == 700
+
+    def test_energy_next_hour_rolls_into_tomorrow_at_hour_23(self):
+        start = datetime(2024, 6, 15, 0, 0, tzinfo=BERLIN)
+        result = make_result(start, 48)
+
+        with at(datetime(2024, 6, 15, 23, 10, tzinfo=BERLIN)):
+            assert result.energy_next_hour == 2500
+
+    def test_missing_period_is_zero_rather_than_an_error(self):
+        start = datetime(2024, 6, 15, 12, 0, tzinfo=BERLIN)
+        result = make_result(start, 4)
+
+        with at(datetime(2024, 6, 15, 3, 0, tzinfo=BERLIN)):
+            assert result.energy_current_hour == 0
+            assert result.energy_next_hour == 0
 
 
-def test_current_hour_reflects_the_real_clock():
-    assert 0 <= ForecastResult._current_hour() < 24
+class TestIntervalIndependence:
+    def test_hourly_figures_sum_sub_hour_intervals(self):
+        """Nothing assumes one row equals one hour (chapter 3.5)."""
+        start = datetime(2024, 6, 15, 0, 0, tzinfo=BERLIN)
+        result = make_result(start, 96, interval_minutes=15, wh_per_period=25)
+
+        with at(datetime(2024, 6, 15, 1, 5, tzinfo=BERLIN)):
+            assert result.energy_current_hour == 25 * (5 + 6 + 7 + 8)
+            assert result.energy_next_hour == 25 * (9 + 10 + 11 + 12)
+            assert result.energy_today == 25 * sum(range(1, 97))
+
+
+class TestTimezoneHandling:
+    def test_aggregates_in_the_plants_zone_not_the_processs(self):
+        """A service holds brains in several zones; none of them is local."""
+        start = datetime(2024, 6, 14, 12, 0, tzinfo=timezone.utc)
+        result = make_result(start, 24, zone="Pacific/Auckland")
+
+        # 12:00 UTC on the 14th is already 00:00 on the 15th in Auckland, so
+        # the whole series belongs to that day there.
+        with at(datetime(2024, 6, 15, 3, 0, tzinfo=timezone.utc)):
+            assert result.energy_today == sum(range(100, 100 * 25, 100))
+
+    def test_utc_keys_are_converted_before_grouping(self):
+        start = datetime(2024, 6, 14, 23, 0, tzinfo=timezone.utc)
+        result = make_result(start, 2)
+
+        # 23:00 UTC is 01:00 in Berlin on the 15th, so both periods are today.
+        with at(datetime(2024, 6, 15, 12, 0, tzinfo=BERLIN)):
+            assert result.energy_today == 300
+
+    def test_naive_periods_are_read_as_local_wall_clock(self):
+        start = datetime(2024, 6, 15, 0, 0)
+        result = make_result(start, 24)
+
+        with at(datetime(2024, 6, 15, 5, 20, tzinfo=BERLIN)):
+            assert result.energy_current_hour == 600
+
+    def test_empty_period_aggregates_to_zero(self):
+        result = ForecastResult(
+            interval_minutes=60, timezone="Europe/Berlin", energy_period={}
+        )
+
+        assert result.energy_today == 0
+        assert result.energy_current_hour == 0
+
+    def test_survives_the_dst_transition(self):
+        """The night the clock goes back has 25 hours in Berlin.
+
+        Keyed in UTC on purpose: two local timestamps of 02:00 that hour are
+        the same wall clock and would collapse into one dictionary entry.
+        """
+        start = datetime(2024, 10, 26, 22, 0, tzinfo=timezone.utc)
+        result = make_result(start, 25, wh_per_period=100)
+
+        with at(datetime(2024, 10, 27, 12, 0, tzinfo=BERLIN)):
+            assert result.energy_today == sum(range(100, 100 * 26, 100))
+
+    def test_hourly_figures_hold_through_the_repeated_hour(self):
+        start = datetime(2024, 10, 26, 22, 0, tzinfo=timezone.utc)
+        result = make_result(start, 25, wh_per_period=100)
+
+        # 01:00 UTC is the second 02:00 in Berlin; both belong to that hour.
+        with at(datetime(2024, 10, 27, 1, 30, tzinfo=timezone.utc)):
+            assert result.energy_current_hour == 300 + 400
+
+    def test_now_reflects_the_real_clock(self):
+        assert ForecastResult._now().tzinfo is not None
