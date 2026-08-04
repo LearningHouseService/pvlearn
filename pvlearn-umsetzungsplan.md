@@ -93,9 +93,13 @@ Das bisherige Power-Modell entfällt. Begründung: Beide Modelle trainieren auf 
 
 Auf dem Referenzdatensatz aus Phase 0 ist das empirisch bestätigt: MAE 620,88 Wh für das Energiemodell gegenüber 624,93 W für das Leistungsmodell, R² 0,886 gegenüber 0,885. Die beiden Modelle liegen unter einem Prozent auseinander.
 
-`power_period` wird **weiterhin publiziert**, abgeleitet als `energy_wh * 60 / interval_minutes`. Damit ist der Wegfall kein Breaking Change für MQTT-Konsumenten. Was verloren geht, ist die Momentanleistung zum Zeitstempel; das braucht weder das Energy Dashboard noch ein bekannter Automations-Use-Case. Im Changelog als „jetzt Intervallmittel statt Momentanwert" dokumentieren.
+**Der Leistungswert entfällt ersatzlos.** Nicht nur das Modell, auch die Ausgabe: pvlearn publiziert kein `power_period`, und `solaredge2mqtt` stellt es mittelfristig ebenfalls ein. Eine abgeleitete Leistung wäre reine Umrechnung derselben Zahl in eine andere Einheit — sie trägt keine Information, die nicht schon in `energy_period` steht, und hält ein zweites Feld am Leben, das bei jeder Änderung an der Auflösung mitgepflegt werden muss.
 
-Dass hier durch das konfigurierte Intervall gerechnet wird statt fest durch eine Stunde, ist der einzige Grund, warum eine spätere Umstellung auf feinere Auflösung kein stiller Faktor-4-Fehler wird. Bei 60 Minuten ist der Faktor 1 und die Formel entspricht dem bisherigen Verhalten.
+Eine Prüfung der bekannten Konsumenten stützt das: `power_period` wird zwar nach MQTT publiziert und von der HACS-Integration `solaredge2mqtt_forecast` in `ForecastData.power_period` eingelesen — **verwendet wird es dort nirgends**. Der Energy-Dashboard-Provider arbeitet ausschließlich mit `energy_period`, Sensor-Entitäten für Leistung existieren nicht. Der Wert wird berechnet, publiziert, nach InfluxDB geschrieben, geparst und dann verworfen.
+
+Es bleibt ein Breaking Change für unbekannte Dritt-Subscriber des MQTT-Topics. Behandlung analog zu Phase 5: Feld als deprecated ankündigen, mindestens zwei Minor-Releases weiter publizieren, dann entfernen. Im Changelog mit dem Hinweis, dass sich die Momentanleistung aus `energy_period` und dem Intervall trivial selbst berechnen lässt.
+
+Für pvlearn selbst gibt es nichts zu deprecaten — die Library ist neu und publiziert den Wert nie.
 
 ### 3.4 Modell-Metadaten und Invalidierung
 
@@ -139,7 +143,6 @@ Open-Meteo kann 15 Minuten, aber wenn der Wechselrichter nur Stundenwerte meldet
 
 - `interval` als Pflichtfeld in Brain-Konfiguration und Modell-Metadaten, mit Invalidierung bei Abweichung (siehe 3.4)
 - Zeit-Features auf Minuten seit Mitternacht (siehe 3.2)
-- `power_period` als `energy_wh * 60 / interval_minutes` statt fest über eine Stunde (siehe 3.3)
 - Aggregationslogik summiert Intervalle innerhalb eines Zeitraums, statt „eine Zeile = eine Stunde" anzunehmen
 - Der Prognose-Endpunkt gibt das Intervall in der Antwort mit an
 
@@ -210,11 +213,11 @@ Ohne diesen Schritt ist Phase 1a nicht verifizierbar.
 
 **Ziel:** Ein Energiemodell, kanonisches Feature-Schema, optionale Strahlungs-Features.
 
-- `ForecasterType` entfällt; `Forecaster` kennt nur noch das Energieziel.
+- `ForecasterType` und das Leistungsmodell entfallen vollständig; `Forecaster` kennt nur noch das Energieziel. pvlearn berechnet und publiziert keinen Leistungswert (siehe 3.3).
+- `solaredge2mqtt` leitet `power_period` für die Dauer der Deprecation-Frist lokal aus `energy_period` ab, damit bestehende MQTT-Subscriber nicht sofort brechen. Der Shim lebt in solaredge2mqtt, nicht in pvlearn, und wird im Changelog als deprecated angekündigt.
 - Feature-Konstanten auf das kanonische Schema aus Kapitel 3.1 umstellen.
 - OWM-Adapter in solaredge2mqtt: mappt `OpenWeatherMapForecastData` auf das kanonische Schema. `weather_id` → WMO-Mapping.
 - `SunEncoder` auf primitive Parameter umstellen, TZ explizit.
-- `power_period` aus dem Energiemodell ableiten, über das konfigurierte Intervall statt fest über eine Stunde.
 - `interval` in Konfiguration und Modell-Metadaten einführen, vorerst ausschließlich mit dem Wert 60 Minuten (siehe 3.5).
 - Metriken beim Training berechnen und in den Metadaten ablegen (MAE, RMSE, R² auf einem `TimeSeriesSplit`-Holdout).
 - `feature_schema_version = 1` einführen, Invalidierungslogik implementieren.
@@ -224,7 +227,7 @@ Ohne diesen Schritt ist Phase 1a nicht verifizierbar.
 - Bestandsnutzer trainieren beim Update automatisch neu, ohne Fehler im Log.
 - `ephem`- oder `astral`-Abhängigkeit entfernt.
 
-**Release:** `pvlearn 0.2.0`, `solaredge2mqtt` Minor mit Changelog-Hinweis zum Power-Semantikwechsel und zum einmaligen Neutraining.
+**Release:** `pvlearn 0.2.0`, `solaredge2mqtt` Minor mit Changelog-Hinweis zur Deprecation von `power_period` und zum einmaligen Neutraining.
 
 ---
 
@@ -341,6 +344,8 @@ Stattdessen:
 4. Mindestens zwei Minor-Releases Karenz, dann Archivierung.
 
 **solaredge2mqtt** behält den eingebauten Forecast über die Library — der Service ist für dessen Nutzer **kein** Pflichtbestandteil. Wer InfluxDB und OWM bereits betreibt, ändert nichts außer der Konfiguration des Wetter-Providers.
+
+**`power_period` entfernen.** Die in Phase 1b begonnene Deprecation-Frist läuft hier aus: der Ableitungs-Shim in solaredge2mqtt fällt weg, das Feld verschwindet aus dem MQTT-Payload, und `ForecastData.power_period` verschwindet aus der HACS-Integration, die es ohnehin nie verwendet hat.
 
 ---
 
