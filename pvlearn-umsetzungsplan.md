@@ -201,9 +201,9 @@ Ohne diesen Schritt ist Phase 1a nicht verifizierbar.
 **Modell-Split:** `Forecast(Component)` bleibt in solaredge2mqtt und erbt von einem neuen, dekorationsfreien `pvlearn.ForecastResult`, das die Aggregationslogik trägt (`energy_today`, `energy_today_remaining`, `energy_current_hour`, `energy_next_hour`, `energy_tomorrow`). Diese Logik wird in allen vier Stufen gebraucht — sie darf nur einmal existieren.
 
 **Abnahme:**
-- `solaredge2mqtt` mit `pvlearn`-Dependency erzeugt auf dem Referenzdatensatz identische Prognosen wie die Baseline.
-- pvlearn importiert nichts aus `solaredge2mqtt`.
-- pvlearn hat keine Imports von `paho-mqtt`, `influxdb-client`, `fastapi`.
+- [ ] `solaredge2mqtt` mit `pvlearn`-Dependency erzeugt auf dem Referenzdatensatz identische Prognosen wie die Baseline. Offen: pvlearn-seitig durch `tests/test_extraction_regression.py` erbracht (`Forecaster` reproduziert `baseline_forecast.parquet` bitgleich); das Wiring in `solaredge2mqtt` selbst (Dependency, `Forecast(Component)` erbt von `ForecastResult`, Entkopplung dort) ist bewusst eine eigene Session/PR in jenem Repo.
+- [x] pvlearn importiert nichts aus `solaredge2mqtt`.
+- [x] pvlearn hat keine Imports von `paho-mqtt`, `influxdb-client`, `fastapi`.
 
 **Release:** `pvlearn 0.1.0`, `solaredge2mqtt` mit `pvlearn` im `[forecast]`-Extra. Für Nutzer verhaltensneutral.
 
