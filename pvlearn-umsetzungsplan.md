@@ -223,9 +223,10 @@ Ohne diesen Schritt ist Phase 1a nicht verifizierbar.
 - `feature_schema_version = 1` einführen, Invalidierungslogik implementieren.
 
 **Abnahme:**
-- Prognosequalität auf dem Referenzdatensatz nicht schlechter als Baseline (MAE-Vergleich, Toleranz definieren).
-- Bestandsnutzer trainieren beim Update automatisch neu, ohne Fehler im Log.
-- `ephem`- oder `astral`-Abhängigkeit entfernt.
+- [x] Prognosequalität auf dem Referenzdatensatz nicht schlechter als Baseline (MAE-Vergleich, Toleranz definieren). Toleranz: 10 % relativ auf MAE, 0,05 absolut auf R², übernommen aus Phase 1a (Hardware-Rauschen, siehe Nachtrag zu Punkt 6). Erreicht: 641,54 Wh MAE gegenüber 620,88 Wh der Baseline, R² 0,8831 gegenüber 0,8859. Das Encoding selbst ist neutral — mit fixierter Baseline-Feature-Menge reproduziert der 1b-Code die Baseline exakt; die Differenz stammt vollständig aus der geänderten Feature-Auswahl, siehe `docs/adr/0001-feature-selection-threshold.md`.
+- [x] `ephem`-Abhängigkeit entfernt. `astral` deckt Azimut, Elevation und Sonnenauf-/-untergang ab; das `season`-Feature entfällt ersatzlos, weil `day_of_year_sin/cos` dieselbe Jahresposition stetig statt in vier Stufen kodiert.
+- [x] Feature-Auswahl providerunabhängig: `PFISelector` schneidet absolut (`importance > 0`) statt am 75. Perzentil der Kandidaten.
+- [ ] Bestandsnutzer trainieren beim Update automatisch neu, ohne Fehler im Log. Offen — liegt in `solaredge2mqtt` und wird mit dem dortigen Pull Request erbracht (OWM-Adapter auf das kanonische Schema, `power_period`-Shim).
 
 **Release:** `pvlearn 0.2.0`, `solaredge2mqtt` Minor mit Changelog-Hinweis zur Deprecation von `power_period` und zum einmaligen Neutraining.
 
@@ -387,7 +388,18 @@ Diese Punkte sollten vor Beginn der jeweiligen Phase geklärt werden. Entschiede
 5. **Rückwärtsbefüllung:** Soll die HA-Integration beim Setup historische Werte aus dem Recorder nachliefern können? Das würde die Wartezeit bis zur ersten Prognose drastisch verkürzen — allerdings fehlen für die Vergangenheit die passenden Wetter-*Vorhersagen*. Open-Meteo bietet eine Historical-Forecast-API, die genau das liefert (archivierte Vorhersagen statt Reanalyse). Technisch die eleganteste Lösung des Kaltstartproblems, aber nicht trivial.
 6. ~~**scikit-learn-Obergrenze**~~ — **entschieden**. Alle Abhängigkeiten sind in `pyproject.toml` exakt gepinnt, wie in `solaredge2mqtt` und `learninghouse`. Empirisch geprüft: die Baseline reproduziert bitidentisch über numpy 2.4.6/2.5.1, pandas 3.0.3/3.0.5 und scipy 1.17.1/1.18.0 hinweg, solange scikit-learn auf 1.9.0 bleibt. Damit ist scikit-learn der einzige *Library*-Pin, an dem die Reproduzierbarkeit hängt — ein Bump erfordert zwingend eine neu erzeugte Baseline und einen Changelog-Eintrag.
 
-   **Nachtrag aus Phase 1a:** Bitidentität gilt nur auf derselben Maschine. `HistGradientBoostingRegressor`s Split-Suche reagiert auf CPU-mikroarchitekturabhängiges Floating-Point-Rundungsverhalten (SIMD-Reduktionsreihenfolge) — bei einer knappen Split-Schwelle kippt das den gewählten Split und damit den gesamten Baum, unabhängig von `random_state`, Thread-/Prozesszahl oder Python-Version (alles einzeln getestet und ausgeschlossen). Auf CI-Runnern mit anderer CPU als der Erzeugungsmaschine weichen Prognosen daher sichtbar ab. Regressionstests gegen die Baseline vergleichen deshalb ab Phase 1a Prognosegüte (MAE/R² innerhalb Toleranz) statt exakter Werte — siehe `tests/test_extraction_regression.py`. Phase 1b's Abnahme ("Prognosequalität nicht schlechter als Baseline, Toleranz definieren") war davon unabhängig ohnehin schon tolerant formuliert.
+   **Nachtrag aus Phase 1a:** Bitidentität gilt nur auf derselben Maschine. `HistGradientBoostingRegressor`s Split-Suche reagiert auf CPU-mikroarchitekturabhängiges Floating-Point-Rundungsverhalten (SIMD-Reduktionsreihenfolge) — bei einer knappen Split-Schwelle kippt das den gewählten Split und damit den gesamten Baum, unabhängig von `random_state`, Thread-/Prozesszahl oder Python-Version (alles einzeln getestet und ausgeschlossen). Auf CI-Runnern mit anderer CPU als der Erzeugungsmaschine weichen Prognosen daher sichtbar ab. Regressionstests gegen die Baseline vergleichen deshalb ab Phase 1a Prognosegüte (MAE/R² innerhalb Toleranz) statt exakter Werte — siehe `tests/test_extraction_regression.py`.
+
+   **Nachtrag aus Phase 1b:** Die Toleranz deckt Hardware-Rauschen ab, nicht Modelländerungen. Als das kanonische Schema die Feature-Auswahl kippen ließ (Punkt 7), hätte sie die Verschlechterung still absorbiert. Die Ursache wurde stattdessen isoliert und behoben; eine Abweichung innerhalb der Toleranz ist kein Freibrief, sondern ein Anlass nachzusehen, ob sie von der Maschine kommt oder vom Modell.
+
+7. **Feature-Selektion:** Phase 1b hat `PFISelector` von einer Quantils- auf eine absolute Schwelle umgestellt (`importance > 0`), weil ein Quantil die Auswahl an die Zahl der gelieferten Provider-Spalten koppelt — Begründung und Messtabelle in `docs/adr/0001-feature-selection-threshold.md`. Das ist die kleinstmögliche Korrektur, nicht das Optimum. Für später, nach Priorität:
+
+   - **Rauschbewusste Schwelle:** `permutation_importance` liefert `importances_std` gleich mit. `mean - k·std > 0` filtert Features, deren Importance nur Rauschen ist, kostet keinen zusätzlichen Fit und bleibt kandidatenzahl-unabhängig. Der naheliegendste nächste Schritt.
+   - **Boruta / Shadow Features:** Vergleich gegen permutierte Kopien jedes Features. Statistisch sauber begründet, kostet mehrere Fits.
+   - **`SequentialFeatureSelector` oder RFECV mit `TimeSeriesSplit`:** optimiert direkt die Zielmetrik statt einer Heuristik und wählt die Feature-Zahl über den CV-Score. Teuer — verschärft Punkt 4 auf schwacher Hardware deutlich.
+   - **Selector ganz streichen:** auf dem Referenzdatensatz liegt „keine Auswahl" (638,23 Wh) gleichauf mit `importance > 0` (641,54 Wh) und besser als das alte Perzentil 75 (668,51 Wh). `HistGradientBoostingRegressor` ist gegenüber irrelevanten Features robust. Entscheidbar erst mit Daten mehrerer Anlagen, weil `selected_features` Teil der Modell-Metadaten aus 3.4 ist.
+
+   **Unabhängiger Defekt, gleiche Stelle:** `PFISelector.fit` splittet mit `train_test_split(..., test_size=0.1, random_state=42)`, also per Default gemischt. Auf stündlich autokorrelierten Daten landen Nachbarstunden in beiden Hälften und die Importances fallen systematisch zu optimistisch aus. Ein chronologischer Split ist korrekt; die Änderung invalidiert jedes trainierte Modell und gehört deshalb in dieselbe Runde wie eine der obigen Umstellungen.
 
 ---
 

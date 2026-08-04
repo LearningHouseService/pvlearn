@@ -36,15 +36,23 @@ pvlearn/
 tests/                   # unit and integration tests mirroring pvlearn/ structure
 scripts/                 # one-off maintenance and data-preparation scripts, not shipped
                          #   with the package and free to use dependencies pvlearn does not
+docs/adr/                # architecture decision records, numbered and append-only
 pvlearn-umsetzungsplan.md  # phased roadmap and architecture decisions — read first
 ```
 
 ### Canonical Data Model
 
 The weather feature schema, time/sun-position features, target variable, and model metadata /
-invalidation rules are specified in chapter 3 of the Umsetzungsplan. Do not invent field names or
-diverge from that schema — every trained model becomes invalid if it changes, so a change there is
-a deliberate, versioned decision (`feature_schema_version`), not a normal refactor.
+invalidation rules are specified in chapter 3 of the Umsetzungsplan; `pvlearn/schema.py` is its
+executable form. Do not invent field names or diverge from that schema — every trained model
+becomes invalid if it changes, so a change there is a deliberate, versioned decision
+(`feature_schema_version`), not a normal refactor.
+
+### Decisions
+
+A decision that needed weighing — and especially one whose reasoning would otherwise turn into a
+comment in the code — goes into `docs/adr/` as a numbered record, with the alternatives and the
+numbers that settled it. The code links to the record rather than restating it.
 
 ---
 
