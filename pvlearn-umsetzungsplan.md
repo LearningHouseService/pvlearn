@@ -201,9 +201,9 @@ Ohne diesen Schritt ist Phase 1a nicht verifizierbar.
 **Modell-Split:** `Forecast(Component)` bleibt in solaredge2mqtt und erbt von einem neuen, dekorationsfreien `pvlearn.ForecastResult`, das die Aggregationslogik trägt (`energy_today`, `energy_today_remaining`, `energy_current_hour`, `energy_next_hour`, `energy_tomorrow`). Diese Logik wird in allen vier Stufen gebraucht — sie darf nur einmal existieren.
 
 **Abnahme:**
-- `solaredge2mqtt` mit `pvlearn`-Dependency erzeugt auf dem Referenzdatensatz identische Prognosen wie die Baseline.
-- pvlearn importiert nichts aus `solaredge2mqtt`.
-- pvlearn hat keine Imports von `paho-mqtt`, `influxdb-client`, `fastapi`.
+- [ ] `solaredge2mqtt` mit `pvlearn`-Dependency erzeugt auf dem Referenzdatensatz identische Prognosen wie die Baseline. Offen: pvlearn-seitig durch `tests/test_extraction_regression.py` erbracht (`Forecaster` reproduziert die Prognosegüte von `baseline_forecast.parquet` innerhalb Toleranz — bitgenauer Vergleich ist hardwareabhängig und nicht CI-tauglich, siehe Nachtrag zu Punkt 6 in Kapitel 6); das Wiring in `solaredge2mqtt` selbst (Dependency, `Forecast(Component)` erbt von `ForecastResult`, Entkopplung dort) ist bewusst eine eigene Session/PR in jenem Repo.
+- [x] pvlearn importiert nichts aus `solaredge2mqtt`.
+- [x] pvlearn hat keine Imports von `paho-mqtt`, `influxdb-client`, `fastapi`.
 
 **Release:** `pvlearn 0.1.0`, `solaredge2mqtt` mit `pvlearn` im `[forecast]`-Extra. Für Nutzer verhaltensneutral.
 
@@ -385,7 +385,9 @@ Diese Punkte sollten vor Beginn der jeweiligen Phase geklärt werden. Entschiede
 3. **Mehrere Strings pro Anlage:** Ost-West-Anlagen könnten von getrennten Modellen je Ausrichtung profitieren. Erfordert, dass der Client getrennte Energiewerte liefert. Als optionales Feature denkbar; erhöht die Komplexität der API spürbar.
 4. **Hyperparameter-Tuning im Service:** `GridSearchCV` über neun Kombinationen ist auf einem Raspberry Pi grenzwertig. Entweder deaktivieren, auf gelegentlich (wöchentlich) begrenzen oder auf `HalvingGridSearchCV` wechseln.
 5. **Rückwärtsbefüllung:** Soll die HA-Integration beim Setup historische Werte aus dem Recorder nachliefern können? Das würde die Wartezeit bis zur ersten Prognose drastisch verkürzen — allerdings fehlen für die Vergangenheit die passenden Wetter-*Vorhersagen*. Open-Meteo bietet eine Historical-Forecast-API, die genau das liefert (archivierte Vorhersagen statt Reanalyse). Technisch die eleganteste Lösung des Kaltstartproblems, aber nicht trivial.
-6. ~~**scikit-learn-Obergrenze**~~ — **entschieden**. Alle Abhängigkeiten sind in `pyproject.toml` exakt gepinnt, wie in `solaredge2mqtt` und `learninghouse`. Empirisch geprüft: die Baseline reproduziert bitidentisch über numpy 2.4.6/2.5.1, pandas 3.0.3/3.0.5 und scipy 1.17.1/1.18.0 hinweg, solange scikit-learn auf 1.9.0 bleibt. Damit ist scikit-learn der einzige Pin, an dem die Reproduzierbarkeit tatsächlich hängt — ein Bump erfordert zwingend eine neu erzeugte Baseline und einen Changelog-Eintrag.
+6. ~~**scikit-learn-Obergrenze**~~ — **entschieden**. Alle Abhängigkeiten sind in `pyproject.toml` exakt gepinnt, wie in `solaredge2mqtt` und `learninghouse`. Empirisch geprüft: die Baseline reproduziert bitidentisch über numpy 2.4.6/2.5.1, pandas 3.0.3/3.0.5 und scipy 1.17.1/1.18.0 hinweg, solange scikit-learn auf 1.9.0 bleibt. Damit ist scikit-learn der einzige *Library*-Pin, an dem die Reproduzierbarkeit hängt — ein Bump erfordert zwingend eine neu erzeugte Baseline und einen Changelog-Eintrag.
+
+   **Nachtrag aus Phase 1a:** Bitidentität gilt nur auf derselben Maschine. `HistGradientBoostingRegressor`s Split-Suche reagiert auf CPU-mikroarchitekturabhängiges Floating-Point-Rundungsverhalten (SIMD-Reduktionsreihenfolge) — bei einer knappen Split-Schwelle kippt das den gewählten Split und damit den gesamten Baum, unabhängig von `random_state`, Thread-/Prozesszahl oder Python-Version (alles einzeln getestet und ausgeschlossen). Auf CI-Runnern mit anderer CPU als der Erzeugungsmaschine weichen Prognosen daher sichtbar ab. Regressionstests gegen die Baseline vergleichen deshalb ab Phase 1a Prognosegüte (MAE/R² innerhalb Toleranz) statt exakter Werte — siehe `tests/test_extraction_regression.py`. Phase 1b's Abnahme ("Prognosequalität nicht schlechter als Baseline, Toleranz definieren") war davon unabhängig ohnehin schon tolerant formuliert.
 
 ---
 
