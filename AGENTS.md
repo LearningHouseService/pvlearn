@@ -13,7 +13,7 @@ task — it defines what phase the project is in and which changes are in scope.
 - **Purpose:** Self-learning PV production forecast library and REST service. Trains on a plant's
   own historical measurements instead of a generic physical plant model (orientation, tilt, kWp) —
   that is the differentiator against Forecast.Solar and Solcast.
-- **Language:** Python (>=3.11, <4)
+- **Language:** Python (>=3.12, <4)
 - **Package Manager:** pip with `pyproject.toml`
 - **Origin:** extracted from the forecast module of `DerOetzi/solaredge2mqtt`. See the
   Umsetzungsplan for the extraction phases and what stays behind in that repository.
@@ -79,8 +79,8 @@ To repair a branch where it is missing: `git rebase <base> --signoff` followed b
 
 ## Code Conventions
 
-- Use Python >=3.11 syntax and language features; do not rely on 3.12+-only syntax since the
-  compat matrix in CI tests down to 3.11.
+- Use Python >=3.12 syntax and language features; do not rely on 3.13-only syntax since the
+  compat matrix in CI tests down to 3.12.
 - All code comments and documentation must be in **English**, independent of the language used in
   planning documents.
 - Type hints are mandatory on public functions and methods; `pyright` runs in CI.
