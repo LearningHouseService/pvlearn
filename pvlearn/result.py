@@ -1,7 +1,28 @@
-from datetime import date, datetime, timedelta
+from dataclasses import dataclass
+from datetime import UTC, date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from pydantic import BaseModel
+
+
+@dataclass(frozen=True)
+class _Period:
+    """One forecast interval seen both ways.
+
+    `local` answers which calendar day it belongs to, `instant` answers what
+    came before or after it. On a DST boundary those two questions have
+    different answers, which is why both are kept.
+    """
+
+    local: datetime
+    instant: datetime
+
+    @classmethod
+    def of(cls, period: datetime, zone: ZoneInfo) -> "_Period":
+        if period.tzinfo is None:
+            period = period.replace(tzinfo=zone)
+
+        return cls(local=period.astimezone(zone), instant=period.astimezone(UTC))
 
 
 class ForecastResult(BaseModel):
@@ -16,13 +37,23 @@ class ForecastResult(BaseModel):
 
     Aggregation works on the timestamps, not on positions: a row is not
     implicitly an hour and the series does not implicitly start at midnight.
-    With `interval_minutes` below 60 the hourly figures sum the slots that fall
-    into the respective clock hour.
+    Below 60 minutes per interval the hourly figures sum every slot that falls
+    into the hour.
 
     `timezone` is what "today" means — the plant's, never the process's. Keys
     may arrive in any zone (UTC is the safe choice, since a local-time key
     cannot distinguish the two 02:00s of a DST fallback night); naive keys are
     read as wall clock in `timezone`.
+
+    Days are calendar days in that zone, so a DST fallback day is 25 hours
+    long. The hourly figures instead cover 60 real minutes from the start of
+    the current clock hour: on a fallback night that is the first 02:00 and
+    then the second, never both at once, and across a spring-forward gap the
+    next hour is the one that actually follows.
+
+    `interval_minutes` does not drive any of that — the timestamps do. It is
+    carried because the interval belongs in the forecast response (chapter 3.5)
+    and a consumer should not have to infer it from key spacing.
     """
 
     interval_minutes: int
@@ -36,20 +67,25 @@ class ForecastResult(BaseModel):
     @property
     def energy_today_remaining(self) -> int:
         now = self._now_local()
-        hour_start = self._hour_start(now)
+        hour_start = self._instant(self._hour_start(now))
         return sum(
             energy
-            for period, energy in self._local_periods()
-            if period.date() == now.date() and period >= hour_start
+            for period, energy in self._periods()
+            if period.local.date() == now.date() and period.instant >= hour_start
         )
 
     @property
     def energy_current_hour(self) -> int:
-        return self._sum_hour(self._hour_start(self._now_local()))
+        return self._sum_hour(self._instant(self._hour_start(self._now_local())))
 
     @property
     def energy_next_hour(self) -> int:
-        return self._sum_hour(self._hour_start(self._now_local()) + timedelta(hours=1))
+        # An hour later in real time, not on the wall clock: adding to the
+        # local timestamp would land in the non-existent hour of a
+        # spring-forward night and match nothing.
+        return self._sum_hour(
+            self._instant(self._hour_start(self._now_local())) + timedelta(hours=1)
+        )
 
     @property
     def energy_tomorrow(self) -> int:
@@ -57,34 +93,31 @@ class ForecastResult(BaseModel):
 
     def _sum_day(self, day: date) -> int:
         return sum(
-            energy for period, energy in self._local_periods() if period.date() == day
+            energy for period, energy in self._periods() if period.local.date() == day
         )
 
     def _sum_hour(self, hour_start: datetime) -> int:
         hour_end = hour_start + timedelta(hours=1)
         return sum(
             energy
-            for period, energy in self._local_periods()
-            if hour_start <= period < hour_end
+            for period, energy in self._periods()
+            if hour_start <= period.instant < hour_end
         )
 
-    def _local_periods(self) -> list[tuple[datetime, int]]:
+    def _periods(self) -> list[tuple["_Period", int]]:
+        zone = ZoneInfo(self.timezone)
         return [
-            (self._to_local(period), energy)
+            (_Period.of(period, zone), energy)
             for period, energy in self.energy_period.items()
         ]
-
-    def _to_local(self, period: datetime) -> datetime:
-        zone = ZoneInfo(self.timezone)
-
-        if period.tzinfo is None:
-            return period.replace(tzinfo=zone)
-
-        return period.astimezone(zone)
 
     @staticmethod
     def _hour_start(moment: datetime) -> datetime:
         return moment.replace(minute=0, second=0, microsecond=0)
+
+    @staticmethod
+    def _instant(moment: datetime) -> datetime:
+        return moment.astimezone(UTC)
 
     def _now_local(self) -> datetime:
         return self._now().astimezone(ZoneInfo(self.timezone))

@@ -148,13 +148,27 @@ class TestTimezoneHandling:
         with at(datetime(2024, 10, 27, 12, 0, tzinfo=BERLIN)):
             assert result.energy_today == sum(range(100, 100 * 26, 100))
 
-    def test_hourly_figures_hold_through_the_repeated_hour(self):
+    def test_the_repeated_hour_is_counted_once_at_a_time(self):
+        """02:00 happens twice; only the 60 minutes we are in count."""
         start = datetime(2024, 10, 26, 22, 0, tzinfo=timezone.utc)
         result = make_result(start, 25, wh_per_period=100)
 
-        # 01:00 UTC is the second 02:00 in Berlin; both belong to that hour.
-        with at(datetime(2024, 10, 27, 1, 30, tzinfo=timezone.utc)):
-            assert result.energy_current_hour == 300 + 400
+        with at(datetime(2024, 10, 27, 0, 30, tzinfo=timezone.utc)):  # first 02:30
+            assert result.energy_current_hour == 300
+            assert result.energy_next_hour == 400
+
+        with at(datetime(2024, 10, 27, 1, 30, tzinfo=timezone.utc)):  # second 02:30
+            assert result.energy_current_hour == 400
+            assert result.energy_next_hour == 500
+
+    def test_next_hour_survives_the_spring_forward_gap(self):
+        """02:00 does not exist that night; the next hour is 03:00."""
+        start = datetime(2024, 3, 30, 23, 0, tzinfo=timezone.utc)
+        result = make_result(start, 6)
+
+        with at(datetime(2024, 3, 31, 0, 30, tzinfo=timezone.utc)):  # 01:30 CET
+            assert result.energy_current_hour == 200
+            assert result.energy_next_hour == 300
 
     def test_now_reflects_the_real_clock(self):
         assert ForecastResult._now().tzinfo is not None
