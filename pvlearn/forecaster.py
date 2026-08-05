@@ -2,7 +2,9 @@ import json
 import logging
 import time
 from asyncio import Event
+from json import JSONDecodeError
 from math import ceil
+from os import replace
 from pathlib import Path
 from typing import cast
 
@@ -10,6 +12,7 @@ from joblib import Memory, dump, load
 from numpy import ones_like
 from numpy.typing import NDArray
 from pandas import DataFrame, Series
+from pydantic import ValidationError
 from sklearn import clone
 from sklearn.base import BaseEstimator, TransformerMixin
 from sklearn.compose import ColumnTransformer
@@ -26,7 +29,11 @@ from pvlearn.encoders import (
     SunEncoder,
     TimeEncoder,
 )
-from pvlearn.exceptions import InsufficientDataError, ModelNotTrainedError
+from pvlearn.exceptions import (
+    InsufficientDataError,
+    ModelNotTrainedError,
+    SchemaMismatchError,
+)
 from pvlearn.location import Location
 from pvlearn.metadata import ModelMetadata, ModelMetrics
 from pvlearn.schema import (
@@ -96,49 +103,68 @@ class Forecaster:
                 f"({self.minimum_training_rows} intervals) to start training",
             )
 
+        # TimeSeriesSplit works on positions, so the holdout is only the most
+        # recent data if the rows are in chronological order.
+        data = data.sort_values(TIME_FEATURE)
+
         self.training_completed.clear()
         start_time = time.time()
-        y_vector = cast(Series, data[TARGET_FEATURE])
+        try:
+            y_vector = cast(Series, data[TARGET_FEATURE])
+            train_index, test_index = self._holdout_split(data)
 
-        pipeline = self._prepare_model_pipeline(data.columns.to_list())
+            pipeline = self._prepare_model_pipeline(data.columns.to_list())
 
-        if self.enable_hyperparameter_tuning:
-            pipeline = self._hyperparametertuning(data, y_vector, pipeline)
+            if self.enable_hyperparameter_tuning:
+                # Tuned on the evaluation split's training part only. Searching
+                # over the full dataset would pick the parameters with the
+                # holdout's help and the metrics below would flatter the model.
+                pipeline = self._hyperparametertuning(
+                    data.iloc[train_index], y_vector.iloc[train_index], pipeline
+                )
 
-        metrics = self._evaluate(data, y_vector, pipeline)
+            metrics = self._evaluate(
+                data, y_vector, (train_index, test_index), pipeline
+            )
 
-        self.model_pipeline = pipeline
-        self.model_pipeline.fit(data, y_vector)
-        self._cleanup_cache()
+            # `pipeline` itself is still unfitted: `_evaluate` scored a clone.
+            fitted_pipeline = pipeline
+            fitted_pipeline.fit(data, y_vector)
+            self._cleanup_cache()
 
-        execution_time = time.time() - start_time
-        self.training_completed.set()
+            transformed_features = fitted_pipeline.named_steps[
+                "preprocessor"
+            ].get_feature_names_out()
+            logger.debug(
+                "Transformed features (%d): %s",
+                len(transformed_features),
+                ", ".join(transformed_features),
+            )
 
-        transformed_features = self.model_pipeline.named_steps[
-            "preprocessor"
-        ].get_feature_names_out()
-        logger.debug(
-            "Transformed features (%d): %s",
-            len(transformed_features),
-            ", ".join(transformed_features),
-        )
+            selected_features = fitted_pipeline.named_steps[
+                "feature_selector"
+            ].important_features_
+            logger.info(
+                "Selected features (%d): %s",
+                len(selected_features),
+                ", ".join(selected_features),
+            )
 
-        selected_features = self.model_pipeline.named_steps[
-            "feature_selector"
-        ].important_features_
-        logger.info(
-            "Selected features (%d): %s",
-            len(selected_features),
-            ", ".join(selected_features),
-        )
-
-        self.metadata = ModelMetadata.create(
-            location=self.location,
-            config=self.config,
-            training_rows=data_count,
-            selected_features=list(selected_features),
-            metrics=metrics,
-        )
+            # Published only once everything succeeded: a failed retrain leaves
+            # the previously trained model in place rather than replacing it
+            # with one that never finished fitting.
+            self.model_pipeline = fitted_pipeline
+            self.metadata = ModelMetadata.create(
+                location=self.location,
+                config=self.config,
+                training_rows=data_count,
+                selected_features=list(selected_features),
+                metrics=metrics,
+            )
+        finally:
+            # Waiters must be released even when training failed, or every
+            # later predict() blocks forever on a model that will never come.
+            self.training_completed.set()
 
         logger.info(
             "Holdout metrics: MAE %.2f Wh, RMSE %.2f Wh, R² %.4f",
@@ -146,10 +172,18 @@ class Forecaster:
             metrics.rmse,
             metrics.r2,
         )
-        logger.info("Training execution time: %.2f seconds", execution_time)
+        logger.info("Training execution time: %.2f seconds", time.time() - start_time)
+
+    def _holdout_split(self, data: DataFrame) -> tuple[NDArray, NDArray]:
+        splitter = TimeSeriesSplit(n_splits=self.METRICS_SPLITS)
+        return list(splitter.split(data))[-1]
 
     def _evaluate(
-        self, data: DataFrame, y_vector: Series, pipeline: Pipeline
+        self,
+        data: DataFrame,
+        y_vector: Series,
+        split: tuple[NDArray, NDArray],
+        pipeline: Pipeline,
     ) -> ModelMetrics:
         """Score a copy of the pipeline on the most recent time-series split.
 
@@ -157,8 +191,7 @@ class Forecaster:
         including the holdout, which is the freshest and therefore the most
         relevant part of it.
         """
-        splitter = TimeSeriesSplit(n_splits=self.METRICS_SPLITS)
-        train_index, test_index = list(splitter.split(data))[-1]
+        train_index, test_index = split
 
         evaluation_pipeline = cast(Pipeline, clone(pipeline))
         evaluation_pipeline.fit(data.iloc[train_index], y_vector.iloc[train_index])
@@ -318,10 +351,21 @@ class Forecaster:
             raise ModelNotTrainedError("There is no trained model to save.")
 
         directory.mkdir(parents=True, exist_ok=True)
-        dump(self.model_pipeline, directory / MODEL_FILENAME)
-        (directory / METADATA_FILENAME).write_text(
-            self.metadata.model_dump_json(indent=2)
-        )
+
+        # Written aside and moved into place, so an interrupted save leaves the
+        # previous pair intact instead of a half-written model next to metadata
+        # describing a different one.
+        staged_model = directory / f"{MODEL_FILENAME}.tmp"
+        staged_metadata = directory / f"{METADATA_FILENAME}.tmp"
+        try:
+            dump(self.model_pipeline, staged_model)
+            staged_metadata.write_text(self.metadata.model_dump_json(indent=2))
+
+            replace(staged_model, directory / MODEL_FILENAME)
+            replace(staged_metadata, directory / METADATA_FILENAME)
+        finally:
+            staged_model.unlink(missing_ok=True)
+            staged_metadata.unlink(missing_ok=True)
 
         logger.info("Saved trained model to %s", directory)
 
@@ -332,9 +376,12 @@ class Forecaster:
         """Restore a model, or refuse to.
 
         Raises `ModelNotTrainedError` when there is nothing to load and
-        `SchemaMismatchError` when what is there was trained under a different
-        setup. Both mean the same thing to a caller — train from scratch — but
-        only one of them is worth a warning in the log.
+        `SchemaMismatchError` when what is there cannot be trusted — a
+        different setup, or metadata this version cannot read at all. Both mean
+        the same thing to a caller (train from scratch), which is why an
+        unreadable sidecar is reported as a mismatch rather than as a raw
+        JSON or validation error: a caller that catches the two documented
+        errors to retrain must not crash on a file from another version.
         """
         model_path = directory / MODEL_FILENAME
         metadata_path = directory / METADATA_FILENAME
@@ -342,13 +389,27 @@ class Forecaster:
         if not model_path.is_file() or not metadata_path.is_file():
             raise ModelNotTrainedError(f"No persisted model found in {directory}")
 
-        metadata = ModelMetadata.model_validate(
-            json.loads(metadata_path.read_text()),
-        )
+        try:
+            metadata = ModelMetadata.model_validate(
+                json.loads(metadata_path.read_text()),
+            )
+        except (JSONDecodeError, ValidationError, UnicodeDecodeError) as error:
+            raise SchemaMismatchError(
+                f"Model metadata in {directory} is unreadable and the model "
+                f"has to be retrained: {error}"
+            ) from error
+
         metadata.raise_on_mismatch(location, config)
 
         forecaster = cls(location, config)
-        forecaster.model_pipeline = cast(Pipeline, load(model_path))
+        try:
+            forecaster.model_pipeline = cast(Pipeline, load(model_path))
+        except Exception as error:
+            raise SchemaMismatchError(
+                f"Persisted model in {directory} could not be loaded and has "
+                f"to be retrained: {error}"
+            ) from error
+
         forecaster.metadata = metadata
         forecaster.training_completed.set()
 

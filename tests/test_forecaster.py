@@ -216,12 +216,80 @@ class TestForecasterTrain:
         forecaster = Forecaster(make_location(), make_config())
         data = make_training_data()
         pipeline = forecaster._prepare_model_pipeline(data.columns.to_list())
+        split = forecaster._holdout_split(data)
 
-        metrics = forecaster._evaluate(data, cast(Series, data["energy"]), pipeline)
+        metrics = forecaster._evaluate(
+            data, cast(Series, data["energy"]), split, pipeline
+        )
 
         assert metrics.mae >= 0
         with pytest.raises(NotFittedError):
             pipeline.predict(data)
+
+    def test_train_sorts_the_data_chronologically(self):
+        """TimeSeriesSplit cuts by position, so unsorted rows would make the
+        holdout a random sample and the recorded metrics meaningless."""
+        forecaster = Forecaster(make_location(), make_config())
+        shuffled = make_training_data().sample(frac=1, random_state=7)
+
+        captured: dict[str, DataFrame] = {}
+        real_split = forecaster._holdout_split
+
+        def capture(data: DataFrame):
+            captured["data"] = data
+            return real_split(data)
+
+        with patch.object(forecaster, "_holdout_split", side_effect=capture):
+            forecaster.train(shuffled)
+
+        assert captured["data"]["time"].is_monotonic_increasing
+
+    def test_tuning_never_sees_the_holdout(self):
+        """Otherwise the recorded metrics are scored on data that helped pick
+        the hyperparameters, and they flatter the model."""
+        forecaster = Forecaster(make_location(), make_config(hyperparametertuning=True))
+        data = make_training_data()
+
+        with (
+            patch.object(
+                forecaster,
+                "_hyperparametertuning",
+                side_effect=lambda tuning_data, _y, pipeline: pipeline,
+            ) as mock_tune,
+            patch.object(forecaster, "_evaluate", return_value=make_metrics()),
+        ):
+            forecaster.train(data)
+
+        tuning_data = mock_tune.call_args.args[0]
+        _, test_index = forecaster._holdout_split(data)
+        holdout_times = set(data.iloc[test_index]["time"])
+
+        assert holdout_times.isdisjoint(set(tuning_data["time"]))
+
+    def test_failed_training_releases_waiters(self):
+        """A predict() awaiting training must never block on a model that will
+        not arrive."""
+        forecaster = Forecaster(make_location(), make_config())
+
+        with patch.object(forecaster, "_evaluate", side_effect=RuntimeError("boom")):
+            with pytest.raises(RuntimeError, match="boom"):
+                forecaster.train(make_training_data())
+
+        assert forecaster.training_completed.is_set()
+
+    def test_failed_training_keeps_the_previous_model(self):
+        forecaster = Forecaster(make_location(), make_config())
+        data = make_training_data()
+        forecaster.train(data)
+        working_pipeline = forecaster.model_pipeline
+        working_metadata = forecaster.metadata
+
+        with patch.object(forecaster, "_evaluate", side_effect=RuntimeError("boom")):
+            with pytest.raises(RuntimeError):
+                forecaster.train(data)
+
+        assert forecaster.model_pipeline is working_pipeline
+        assert forecaster.metadata is working_metadata
 
     def test_cleanup_cache_calls_reduce_size_when_memory_available(self):
         forecaster = Forecaster(make_location(), make_config())
@@ -390,6 +458,53 @@ class TestForecasterPersistence:
                 make_location(),
                 make_config(weather_provider="open-meteo"),
             )
+
+    def test_load_rejects_unreadable_metadata_as_a_mismatch(self, tmp_path):
+        """A caller catching the documented errors to retrain must not crash on
+        a sidecar written by another version."""
+        forecaster = Forecaster(make_location(), make_config())
+        forecaster.train(make_training_data())
+        forecaster.save(tmp_path)
+        (tmp_path / METADATA_FILENAME).write_text("{ truncated")
+
+        with pytest.raises(SchemaMismatchError, match="unreadable"):
+            Forecaster.load(tmp_path, make_location(), make_config())
+
+    def test_load_rejects_metadata_missing_required_fields(self, tmp_path):
+        forecaster = Forecaster(make_location(), make_config())
+        forecaster.train(make_training_data())
+        forecaster.save(tmp_path)
+        (tmp_path / METADATA_FILENAME).write_text(
+            json.dumps({"pvlearn_version": "9.9"})
+        )
+
+        with pytest.raises(SchemaMismatchError, match="unreadable"):
+            Forecaster.load(tmp_path, make_location(), make_config())
+
+    def test_load_rejects_a_corrupt_model_file(self, tmp_path):
+        forecaster = Forecaster(make_location(), make_config())
+        forecaster.train(make_training_data())
+        forecaster.save(tmp_path)
+        (tmp_path / MODEL_FILENAME).write_bytes(b"not a pickle")
+
+        with pytest.raises(SchemaMismatchError, match="could not be loaded"):
+            Forecaster.load(tmp_path, make_location(), make_config())
+
+    def test_save_leaves_the_previous_pair_intact_when_it_fails(self, tmp_path):
+        """Half a save must not produce a model described by stale metadata."""
+        forecaster = Forecaster(make_location(), make_config())
+        forecaster.train(make_training_data())
+        forecaster.save(tmp_path)
+        first = Forecaster.load(tmp_path, make_location(), make_config())
+
+        forecaster.train(make_training_data(rows=120))
+        with patch("pvlearn.forecaster.dump", side_effect=OSError("no space left")):
+            with pytest.raises(OSError):
+                forecaster.save(tmp_path)
+
+        restored = Forecaster.load(tmp_path, make_location(), make_config())
+        assert restored.metadata == first.metadata
+        assert not list(tmp_path.glob("*.tmp"))
 
     def test_load_rejects_an_outdated_feature_schema(self, tmp_path):
         forecaster = Forecaster(make_location(), make_config())
