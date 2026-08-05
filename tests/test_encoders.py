@@ -1,12 +1,15 @@
 """Tests for pvlearn.encoders, ported from solaredge2mqtt's forecast module."""
 
-from datetime import datetime, timezone
+import pickle
+from datetime import datetime, timedelta, timezone
 from typing import cast
 from unittest.mock import MagicMock, patch
+from zoneinfo import ZoneInfo
 
 import pytest
 from numpy import isclose
 from pandas import DataFrame, Series
+from sklearn import clone
 
 from pvlearn.encoders import (
     BaseEncoder,
@@ -178,11 +181,6 @@ class TestCyclicalEncoder:
 
 
 class TestTimeEncoder:
-    def test_time_encoder_init(self):
-        encoder = TimeEncoder()
-
-        assert encoder.season_starts == {}
-
     def test_time_encoder_transform(self):
         encoder = TimeEncoder()
         df = DataFrame(
@@ -197,16 +195,27 @@ class TestTimeEncoder:
 
         result = encoder.transform(df)
 
-        assert "timestamp_hour_cos" in result.columns
-        assert "timestamp_hour_sin" in result.columns
+        assert "timestamp_minute_of_day_cos" in result.columns
+        assert "timestamp_minute_of_day_sin" in result.columns
         assert "timestamp_month_cos" in result.columns
         assert "timestamp_month_sin" in result.columns
         assert "timestamp_dst" in result.columns
-        assert "timestamp_season" in result.columns
         assert "timestamp_day_of_year_cos" in result.columns
         assert "timestamp_day_of_year_sin" in result.columns
 
         assert "timestamp" not in result.columns
+
+    def test_time_encoder_has_no_season_feature(self):
+        """Dropped with `ephem`; day_of_year carries the same information."""
+        encoder = TimeEncoder()
+        df = DataFrame(
+            {"timestamp": [datetime(2024, 6, 15, 12, 0, tzinfo=timezone.utc)]}
+        )
+        encoder.fit(df)
+
+        result = encoder.transform(df)
+
+        assert not any("season" in column for column in result.columns)
 
     def test_time_encoder_transform_not_fitted_raises(self):
         encoder = TimeEncoder()
@@ -217,69 +226,86 @@ class TestTimeEncoder:
         with pytest.raises(AttributeError, match="is not been fitted yet"):
             encoder.transform(df)
 
-    def test_time_encoder_map_season_spring(self):
+    def test_time_of_day_distinguishes_intervals_within_an_hour(self):
+        """The point of minutes since midnight over the plain hour (3.2)."""
         encoder = TimeEncoder()
-        date = datetime(2024, 4, 15, 12, 0, tzinfo=timezone.utc)
+        df = DataFrame(
+            {
+                "timestamp": [
+                    datetime(2024, 6, 15, 12, 0, tzinfo=timezone.utc),
+                    datetime(2024, 6, 15, 12, 15, tzinfo=timezone.utc),
+                    datetime(2024, 6, 15, 12, 30, tzinfo=timezone.utc),
+                ]
+            }
+        )
+        encoder.fit(df)
 
-        season = encoder._map_season(date)
+        result = encoder.transform(df)
 
-        assert season == "spring"
+        assert result["timestamp_minute_of_day_sin"].nunique() == 3
 
-    def test_time_encoder_map_season_summer(self):
+    def test_minute_of_day_wraps_around_midnight(self):
         encoder = TimeEncoder()
-        date = datetime(2024, 7, 15, 12, 0, tzinfo=timezone.utc)
+        df = DataFrame(
+            {
+                "timestamp": [
+                    datetime(2024, 6, 15, 0, 0, tzinfo=timezone.utc),
+                    datetime(2024, 6, 15, 12, 0, tzinfo=timezone.utc),
+                ]
+            }
+        )
+        encoder.fit(df)
 
-        season = encoder._map_season(date)
+        result = encoder.transform(df)
 
-        assert season == "summer"
+        assert isclose(result["timestamp_minute_of_day_cos"].iloc[0], 1.0)
+        assert isclose(result["timestamp_minute_of_day_sin"].iloc[0], 0.0)
+        assert isclose(result["timestamp_minute_of_day_cos"].iloc[1], -1.0)
 
-    def test_time_encoder_map_season_autumn(self):
+    def test_dst_flag_follows_the_timestamps_own_zone(self):
+        berlin = ZoneInfo("Europe/Berlin")
         encoder = TimeEncoder()
-        date = datetime(2024, 10, 15, 12, 0, tzinfo=timezone.utc)
+        df = DataFrame(
+            {
+                "timestamp": [
+                    datetime(2024, 7, 15, 12, 0, tzinfo=berlin),
+                    datetime(2024, 1, 15, 12, 0, tzinfo=berlin),
+                ]
+            }
+        )
+        encoder.fit(df)
 
-        season = encoder._map_season(date)
+        result = encoder.transform(df)
 
-        assert season == "autumn"
+        assert result["timestamp_dst"].tolist() == [True, False]
 
-    def test_time_encoder_map_season_winter(self):
-        encoder = TimeEncoder()
-        date = datetime(2024, 1, 15, 12, 0, tzinfo=timezone.utc)
 
-        season = encoder._map_season(date)
-
-        assert season == "winter"
-
-    def test_time_encoder_map_season_late_december_is_winter(self):
-        encoder = TimeEncoder()
-        date = datetime(2024, 12, 30, 12, 0, tzinfo=timezone.utc)
-
-        season = encoder._map_season(date)
-
-        assert season == "winter"
-
-    def test_time_encoder_caches_season_starts(self):
-        encoder = TimeEncoder()
-        date1 = datetime(2024, 6, 15, 12, 0, tzinfo=timezone.utc)
-        date2 = datetime(2024, 7, 15, 12, 0, tzinfo=timezone.utc)
-
-        encoder._map_season(date1)
-        encoder._map_season(date2)
-
-        assert 2024 in encoder.season_starts
-        assert len(encoder.season_starts) == 1
+def make_sun_encoder(interval_minutes: int = 60) -> SunEncoder:
+    return SunEncoder(52.52, 13.405, "Europe/Berlin", interval_minutes)
 
 
 class TestSunEncoder:
     def test_sun_encoder_init(self):
-        encoder = SunEncoder(52.52, 13.405, "Europe/Berlin")
+        encoder = make_sun_encoder()
 
         assert encoder.latitude == 52.52
         assert encoder.longitude == 13.405
         assert encoder.timezone == "Europe/Berlin"
+        assert encoder.interval_minutes == 60
         assert encoder._location is not None
 
+    def test_sun_encoder_is_clonable_and_picklable(self):
+        """sklearn.clone and joblib both need primitive constructor arguments."""
+        encoder = make_sun_encoder()
+
+        cloned = cast(SunEncoder, clone(encoder))
+        restored: SunEncoder = pickle.loads(pickle.dumps(encoder))
+
+        assert cloned.get_params() == encoder.get_params()
+        assert restored.get_params() == encoder.get_params()
+
     def test_sun_encoder_transform(self):
-        encoder = SunEncoder(52.52, 13.405, "Europe/Berlin")
+        encoder = make_sun_encoder()
 
         df = DataFrame(
             {
@@ -303,7 +329,7 @@ class TestSunEncoder:
         assert "time" not in result.columns
 
     def test_sun_encoder_daylight_info(self):
-        encoder = SunEncoder(52.52, 13.405, "Europe/Berlin")
+        encoder = make_sun_encoder()
 
         time = datetime(2024, 6, 15, 12, 0, tzinfo=timezone.utc)
         result = encoder.daylight_info(time)
@@ -314,7 +340,7 @@ class TestSunEncoder:
         assert result.iloc[0] > 15
 
     def test_sun_encoder_elevation_at_noon(self):
-        encoder = SunEncoder(52.52, 13.405, "Europe/Berlin")
+        encoder = make_sun_encoder()
 
         df = DataFrame({"time": [datetime(2024, 6, 15, 12, 0, tzinfo=timezone.utc)]})
         encoder.fit(df)
@@ -323,8 +349,69 @@ class TestSunEncoder:
 
         assert result["time_elevation"].iloc[0] > 0
 
+    def test_sun_position_is_evaluated_at_the_middle_of_the_interval(self):
+        """A timestamp labels a span, and the sun moves across it."""
+        start = datetime(2024, 6, 15, 6, 0, tzinfo=timezone.utc)
+
+        elevations = {}
+        for interval in (60, 30):
+            encoder = make_sun_encoder(interval)
+            df = DataFrame({"time": [start]})
+            encoder.fit(df)
+            elevations[interval] = encoder.transform(df)["time_elevation"].iloc[0]
+
+        centered = make_sun_encoder(0)
+        shifted = DataFrame({"time": [start + timedelta(minutes=30)]})
+        centered.fit(shifted)
+
+        # Morning sun: the later the evaluation, the higher it stands.
+        assert elevations[60] > elevations[30]
+        assert isclose(
+            elevations[60], centered.transform(shifted)["time_elevation"].iloc[0]
+        )
+
+    def test_sun_features_follow_the_encoders_location_not_the_process(self):
+        """Two brains, two hemispheres, one process (multi-tenancy)."""
+        df = DataFrame({"time": [datetime(2024, 6, 15, 12, 0, tzinfo=timezone.utc)]})
+
+        berlin = make_sun_encoder()
+        sydney = SunEncoder(-33.87, 151.21, "Australia/Sydney", 60)
+        berlin.fit(df)
+        sydney.fit(df)
+
+        berlin_result = berlin.transform(df.copy())
+        sydney_result = sydney.transform(df.copy())
+
+        assert berlin_result["time_daylight"].iloc[0] > 15
+        assert sydney_result["time_daylight"].iloc[0] < 11
+
+    def test_daylight_info_is_unaffected_by_how_an_instant_is_expressed(self):
+        """Same moment, different zone: identical sun, DST or not."""
+        berlin = ZoneInfo("Europe/Berlin")
+        encoder = make_sun_encoder()
+
+        for local in (
+            datetime(2024, 10, 26, 12, 0, tzinfo=berlin),  # CEST, before the switch
+            datetime(2024, 10, 28, 12, 0, tzinfo=berlin),  # CET, after it
+        ):
+            local_info = encoder.daylight_info(local)
+            utc_info = encoder.daylight_info(local.astimezone(timezone.utc))
+
+            assert isclose(local_info.iloc[1], utc_info.iloc[1])
+            assert isclose(local_info.iloc[2], utc_info.iloc[2])
+
+    def test_daylight_shrinks_across_the_dst_weekend(self):
+        """The 25-hour day is a clock artefact, not an astronomical one."""
+        berlin = ZoneInfo("Europe/Berlin")
+        encoder = make_sun_encoder()
+
+        before = encoder.daylight_info(datetime(2024, 10, 26, 12, 0, tzinfo=berlin))
+        after = encoder.daylight_info(datetime(2024, 10, 28, 12, 0, tzinfo=berlin))
+
+        assert 0 < before.iloc[0] - after.iloc[0] < 0.2
+
     def test_sun_encoder_transform_with_missing_features_raises(self):
-        encoder = SunEncoder(52.52, 13.405, "Europe/Berlin")
+        encoder = make_sun_encoder()
         df = DataFrame({"time": [datetime(2024, 6, 15, 12, 0, tzinfo=timezone.utc)]})
 
         with patch.object(SunEncoder, "_transform", return_value=df.copy()):
@@ -332,7 +419,7 @@ class TestSunEncoder:
                 encoder.transform(df)
 
     def test_sun_encoder_transform_raises_for_dataframe_azimuth(self):
-        encoder = SunEncoder(52.52, 13.405, "Europe/Berlin")
+        encoder = make_sun_encoder()
         df = DataFrame(
             {
                 "time": [

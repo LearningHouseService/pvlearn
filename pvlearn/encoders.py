@@ -2,7 +2,6 @@ import logging
 from datetime import datetime, timedelta
 from typing import Any, Self
 
-import ephem
 from astral import LocationInfo
 from astral.sun import azimuth, elevation, sun
 from numpy import cos, pi, sin
@@ -98,9 +97,22 @@ class CyclicalEncoder(BaseEncoder):
 
 
 class TimeEncoder(BaseEncoder):
-    def __init__(self) -> None:
-        super().__init__()
-        self.season_starts: dict[int, dict[str, datetime]] = {}
+    """Calendar and clock features derived from an interval's timestamp.
+
+    Time of day is encoded as minutes since midnight rather than the hour: on
+    an hourly grid both are the same feature, but for any finer interval every
+    slot within an hour would share one value and the feature would carry no
+    information at all.
+
+    There is no season feature. It used to come from `ephem`'s equinox and
+    solstice dates, which is the only thing that dependency was needed for,
+    while `day_of_year_sin/cos` already carries the same annual position
+    continuously instead of in four steps.
+    """
+
+    MINUTES_PER_DAY = 24 * 60
+    DAYS_PER_YEAR = 365.25
+    MONTHS_PER_YEAR = 12
 
     def transform(self, x_vector: DataFrame) -> DataFrame:
         if self.features is None:
@@ -111,30 +123,27 @@ class TimeEncoder(BaseEncoder):
             feature_series = self._as_series(x_vector, feature)
             x_vector = CyclicalEncoder.transform_cycle_columns(
                 x_vector,
-                f"{feature}_hour",
-                feature_series.dt.hour,
-                24,
+                f"{feature}_minute_of_day",
+                feature_series.dt.hour * 60 + feature_series.dt.minute,
+                self.MINUTES_PER_DAY,
             )
 
             x_vector = CyclicalEncoder.transform_cycle_columns(
                 x_vector,
                 f"{feature}_month",
                 feature_series.dt.month,
-                12,
+                self.MONTHS_PER_YEAR,
             )
 
             x_vector[f"{feature}_dst"] = feature_series.apply(
                 lambda x: x.dst() != timedelta(0)
             ).astype("category")
 
-            x_vector[f"{feature}_season"] = feature_series.apply(
-                self._map_season
-            ).astype("category")
             x_vector = CyclicalEncoder.transform_cycle_columns(
                 x_vector,
                 f"{feature}_day_of_year",
                 feature_series.dt.dayofyear,
-                365.25,
+                self.DAYS_PER_YEAR,
             )
 
             x_vector.drop(feature, axis=1, inplace=True)
@@ -142,47 +151,27 @@ class TimeEncoder(BaseEncoder):
         logger.debug("%s", x_vector.head(30))
         return self._save_feature_names_out(x_vector)
 
-    def _map_season(self, date: datetime) -> str:
-        # astimezone() below reads the process-local timezone, same as the code
-        # this was extracted from. Left as-is for Phase 1a's bit-identical
-        # requirement; season boundaries are wide enough that this only matters
-        # within seconds of an equinox/solstice, and fixing it is a Phase 1b
-        # concern (SunEncoder's own TZ handling, tracked in the Umsetzungsplan).
-        year = date.year
-        if year not in self.season_starts:
-            equinox_mar = ephem.next_vernal_equinox(str(year))
-            solstice_jun = ephem.next_summer_solstice(equinox_mar)
-            equinox_sep = ephem.next_autumnal_equinox(solstice_jun)
-            solstice_dec = ephem.next_winter_solstice(equinox_sep)
-
-            self.season_starts[year] = {
-                "spring": equinox_mar.datetime().astimezone(),
-                "summer": solstice_jun.datetime().astimezone(),
-                "autumn": equinox_sep.datetime().astimezone(),
-                "winter": solstice_dec.datetime().astimezone(),
-            }
-
-        starts = self.season_starts[year]
-
-        season = "winter"
-
-        if date >= starts["spring"]:
-            if date < starts["summer"]:
-                season = "spring"
-            elif date < starts["autumn"]:
-                season = "summer"
-            elif date < starts["winter"]:
-                season = "autumn"
-
-        return season
-
 
 class SunEncoder(BaseEncoder):
-    def __init__(self, latitude: float, longitude: float, timezone: str) -> None:
+    """Sun position and daylight features for an interval.
+
+    Positions are evaluated at the middle of the interval, not at its start:
+    the timestamp labels a span of `interval_minutes`, and the sun moves
+    noticeably across it.
+    """
+
+    def __init__(
+        self,
+        latitude: float,
+        longitude: float,
+        timezone: str,
+        interval_minutes: int,
+    ) -> None:
         super().__init__()
         self.latitude = latitude
         self.longitude = longitude
         self.timezone = timezone
+        self.interval_minutes = interval_minutes
         self._location = LocationInfo(
             "name",
             "region",
@@ -197,13 +186,13 @@ class SunEncoder(BaseEncoder):
         if self.features is None:
             raise AttributeError(f"Encoder {self.__class__} is not been fitted yet.")
 
+        interval_center = timedelta(minutes=self.interval_minutes / 2)
+
         for feature in self.features:
             time_key = f"{feature}_time"
             feature_series = self._as_series(x_vector, feature)
 
-            x_vector[time_key] = feature_series.apply(
-                lambda x: x + timedelta(minutes=30)
-            )
+            x_vector[time_key] = feature_series.apply(lambda x: x + interval_center)
             time_series = self._as_series(x_vector, time_key)
 
             x_vector[f"{feature}_elevation"] = time_series.apply(

@@ -41,10 +41,6 @@ dependencies = [
     "pydantic==2.13.4",
     "astral==3.2",
     "joblib==1.5.3",
-    # Season feature in TimeEncoder. Phase 1b drops this in favor of astral
-    # alone (see chapter 3.2/6 of the Umsetzungsplan); kept for Phase 1a's
-    # bit-identical extraction.
-    "ephem==4.2.1",
 ]
 
 [project.urls]
