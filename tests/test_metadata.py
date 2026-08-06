@@ -7,7 +7,12 @@ from pvlearn import __version__
 from pvlearn.config import ForecasterConfig
 from pvlearn.exceptions import SchemaMismatchError
 from pvlearn.location import Location
-from pvlearn.metadata import ModelMetadata, ModelMetrics, sklearn_minor_version
+from pvlearn.metadata import (
+    PIPELINE_VERSION,
+    ModelMetadata,
+    ModelMetrics,
+    sklearn_minor_version,
+)
 from pvlearn.schema import FEATURE_SCHEMA_VERSION
 
 
@@ -55,6 +60,7 @@ class TestCreate:
 
         assert metadata.pvlearn_version == __version__
         assert metadata.feature_schema_version == FEATURE_SCHEMA_VERSION
+        assert metadata.pipeline_version == PIPELINE_VERSION
         assert metadata.sklearn_version == sklearn_minor_version()
         assert metadata.weather_provider == "open-meteo"
         assert metadata.interval_minutes == 60
@@ -86,6 +92,12 @@ class TestRaiseOnMismatch:
         metadata = make_metadata(feature_schema_version=FEATURE_SCHEMA_VERSION + 1)
 
         with pytest.raises(SchemaMismatchError, match="feature_schema_version"):
+            metadata.raise_on_mismatch(make_location(), make_config())
+
+    def test_rejects_a_different_pipeline_version(self):
+        metadata = make_metadata(pipeline_version=PIPELINE_VERSION - 1)
+
+        with pytest.raises(SchemaMismatchError, match="pipeline_version"):
             metadata.raise_on_mismatch(make_location(), make_config())
 
     def test_rejects_a_different_sklearn_minor_version(self):
