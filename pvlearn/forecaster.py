@@ -19,7 +19,7 @@ from sklearn.compose import ColumnTransformer
 from sklearn.ensemble import HistGradientBoostingRegressor
 from sklearn.inspection import permutation_importance
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
-from sklearn.model_selection import GridSearchCV, TimeSeriesSplit, train_test_split
+from sklearn.model_selection import GridSearchCV, TimeSeriesSplit
 from sklearn.pipeline import Pipeline
 
 from pvlearn.config import ForecasterConfig
@@ -423,23 +423,34 @@ class Forecaster:
 class PFISelector(BaseEstimator, TransformerMixin):
     """Keeps the features whose permutation measurably hurts the model.
 
-    The criterion is absolute — importance above zero — not a quantile of the
-    candidates. A quantile makes a feature's fate depend on how many other
-    columns the weather provider happens to deliver, so the same plant would
-    select differently under Open-Meteo than under OpenWeatherMap. See
-    `docs/adr/0001-feature-selection-threshold.md`.
+    Importance is measured on the most recent tenth of the rows, so **callers
+    must pass them in chronological order** — `Forecaster.train` sorts before
+    fitting. A feature is kept when its mean importance clears `n_std`
+    standard deviations of the permutation repeats, and the `sin`/`cos` halves
+    of one cyclical encoding are always kept or dropped together.
+
+    The measurements behind all three rules are in
+    `docs/adr/0001-feature-selection-threshold.md` and
+    `docs/adr/0002-noise-aware-chronological-feature-selection.md`.
     """
 
-    def __init__(self, estimator, n_repeats=10):
+    #: Fraction of the rows held back to measure importance on.
+    TEST_FRACTION = 0.1
+
+    def __init__(self, estimator, n_repeats=10, n_std=1.0):
         self.estimator = estimator
         self.n_repeats = n_repeats
+        self.n_std = n_std
         self.important_features_: list[str] | None = None
         self.important_indices_: list[bool] | None = None
 
     def fit(self, x_vector: DataFrame, y_vector=None) -> "PFISelector":
-        x_train, x_test, y_train, y_test = train_test_split(
-            x_vector, y_vector, test_size=0.1, random_state=42
-        )
+        columns = x_vector.columns.to_list()
+        cut = self._holdout_start(len(x_vector))
+
+        x_train, x_test = x_vector.iloc[:cut], x_vector.iloc[cut:]
+        y_train, y_test = self._split_target(y_vector, cut)
+
         self.estimator_ = self.estimator.fit(x_train, y_train)
         results = permutation_importance(
             self.estimator_,
@@ -450,12 +461,14 @@ class PFISelector(BaseEstimator, TransformerMixin):
             n_jobs=-1,
         )
 
-        self.feature_importances_ = cast(
-            NDArray,
-            results["importances_mean"],
-        )
+        self.feature_importances_ = cast(NDArray, results["importances_mean"])
+        self.feature_importances_std_ = cast(NDArray, results["importances_std"])
 
-        selected = self.feature_importances_ > 0
+        selected = (
+            self.feature_importances_ - self.n_std * self.feature_importances_std_
+        ) > 0
+        selected = self._keep_cyclical_pairs_together(selected, columns)
+
         if not selected.any():
             # Nothing helped measurably. Keeping everything is the safe read of
             # that: it means the importance estimate is uninformative, not that
@@ -465,11 +478,43 @@ class PFISelector(BaseEstimator, TransformerMixin):
         important_indices = cast(list[bool], selected.tolist())
         self.important_indices_ = important_indices
         self.important_features_ = [
-            col
-            for col, keep in zip(x_vector.columns.to_list(), important_indices)
-            if keep
+            col for col, keep in zip(columns, important_indices) if keep
         ]
         return self
+
+    @classmethod
+    def _holdout_start(cls, rows: int) -> int:
+        """Position the importance holdout starts at, always leaving both
+        sides non-empty."""
+        holdout = min(max(1, int(rows * cls.TEST_FRACTION)), rows - 1)
+        return rows - holdout
+
+    @staticmethod
+    def _split_target(y_vector, cut: int):
+        if hasattr(y_vector, "iloc"):
+            return y_vector.iloc[:cut], y_vector.iloc[cut:]
+        return y_vector[:cut], y_vector[cut:]
+
+    @staticmethod
+    def _keep_cyclical_pairs_together(selected: NDArray, columns: list[str]) -> NDArray:
+        """Promote both halves of a `sin`/`cos` pair when either one is kept.
+
+        A `cos` without its `sin` is ambiguous: it cannot tell morning from
+        afternoon, nor east from west.
+        """
+        selected = selected.copy()
+
+        pairs: dict[str, list[int]] = {}
+        for index, column in enumerate(columns):
+            if column.endswith("_sin") or column.endswith("_cos"):
+                pairs.setdefault(column[:-4], []).append(index)
+
+        for members in pairs.values():
+            if any(selected[index] for index in members):
+                for index in members:
+                    selected[index] = True
+
+        return selected
 
     def transform(self, x_vector: DataFrame) -> DataFrame:
         if self.important_features_ is None:
