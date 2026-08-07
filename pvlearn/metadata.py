@@ -9,6 +9,14 @@ from pvlearn.exceptions import SchemaMismatchError
 from pvlearn.location import Location
 from pvlearn.schema import FEATURE_SCHEMA_VERSION
 
+#: Version of how the training pipeline is built — preprocessing steps, the
+#: feature-selection rule and the estimator. Distinct from
+#: `FEATURE_SCHEMA_VERSION`, which versions the feature vocabulary in
+#: `pvlearn.schema`: the same columns can be assembled into a different model.
+#: Bump it in the same commit as any change to `Forecaster._prepare_model_pipeline`
+#: or to `PFISelector`.
+PIPELINE_VERSION = 2
+
 
 def sklearn_minor_version() -> str:
     """The `major.minor` part of the installed scikit-learn version.
@@ -40,6 +48,10 @@ class ModelMetadata(BaseModel):
 
     pvlearn_version: str
     feature_schema_version: int
+    #: Defaulted so that sidecars written before this field existed are read as
+    #: version 1 — which is what they are — and rejected with a precise reason
+    #: rather than as unreadable metadata.
+    pipeline_version: int = 1
     sklearn_version: str
     weather_provider: str
     interval_minutes: int
@@ -62,6 +74,7 @@ class ModelMetadata(BaseModel):
         return cls(
             pvlearn_version=__version__,
             feature_schema_version=FEATURE_SCHEMA_VERSION,
+            pipeline_version=PIPELINE_VERSION,
             sklearn_version=sklearn_minor_version(),
             weather_provider=config.weather_provider,
             interval_minutes=config.interval_minutes,
@@ -77,10 +90,11 @@ class ModelMetadata(BaseModel):
 
         `pvlearn_version` deliberately does not take part: not every release
         changes how features are built, and the parts that do are covered by
-        `feature_schema_version`.
+        `feature_schema_version` and `pipeline_version`.
         """
         mismatches = [
             self._compare("feature_schema_version", FEATURE_SCHEMA_VERSION),
+            self._compare("pipeline_version", PIPELINE_VERSION),
             self._compare("sklearn_version", sklearn_minor_version()),
             self._compare("weather_provider", config.weather_provider),
             self._compare("interval_minutes", config.interval_minutes),

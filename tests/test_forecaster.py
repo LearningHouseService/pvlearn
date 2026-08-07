@@ -519,6 +519,21 @@ class TestForecasterPersistence:
         with pytest.raises(SchemaMismatchError, match="feature_schema_version"):
             Forecaster.load(tmp_path, make_location(), make_config())
 
+    def test_load_rejects_a_model_from_an_older_pipeline(self, tmp_path):
+        """A sidecar written before `pipeline_version` existed reads as 1 and
+        has to be retrained, not loaded."""
+        forecaster = Forecaster(make_location(), make_config())
+        forecaster.train(make_training_data())
+        forecaster.save(tmp_path)
+
+        metadata_path = tmp_path / METADATA_FILENAME
+        metadata = json.loads(metadata_path.read_text())
+        del metadata["pipeline_version"]
+        metadata_path.write_text(json.dumps(metadata))
+
+        with pytest.raises(SchemaMismatchError, match="pipeline_version is 1"):
+            Forecaster.load(tmp_path, make_location(), make_config())
+
 
 class TestForecasterExtractUsedColumns:
     def test_extract_used_columns_with_list(self):
@@ -554,6 +569,7 @@ class TestPFISelector:
 
         assert selector.estimator == mock_estimator
         assert selector.n_repeats == 5
+        assert selector.n_std == 1.0
 
     def test_pfi_selector_transform_not_fitted_raises(self):
         mock_estimator = MagicMock()
@@ -638,11 +654,100 @@ class TestPFISelector:
 
         with patch(
             "pvlearn.forecaster.permutation_importance",
-            return_value={"importances_mean": np.array([-0.1, -0.2])},
+            return_value={
+                "importances_mean": np.array([-0.1, -0.2]),
+                "importances_std": np.array([0.01, 0.01]),
+            },
         ):
             selector.fit(data, Series([1.0, 2.0, 3.0]))
 
         assert selector.important_features_ == ["a", "b"]
+
+    def test_pfi_selector_drops_features_below_the_permutation_noise(self):
+        """A mean importance smaller than the spread of its own repeats says
+        nothing about the feature (ADR 0002)."""
+        selector = PFISelector(estimator=MagicMock(), n_std=1.0)
+        data = DataFrame({"solid": [1, 2, 3], "noisy": [4, 5, 6]})
+
+        with patch(
+            "pvlearn.forecaster.permutation_importance",
+            return_value={
+                "importances_mean": np.array([0.5, 0.05]),
+                "importances_std": np.array([0.1, 0.2]),
+            },
+        ):
+            selector.fit(data, Series([1.0, 2.0, 3.0]))
+
+        assert selector.important_features_ == ["solid"]
+
+    def test_pfi_selector_measures_importance_on_the_most_recent_rows(self):
+        """A shuffled holdout puts a row's neighbours on both sides of the
+        split, and autocorrelated hours then flatter every importance."""
+        selector = PFISelector(estimator=MagicMock())
+        rows = 100
+        data = DataFrame({"a": list(range(rows))})
+        target = Series([float(index) for index in range(rows)])
+
+        with patch(
+            "pvlearn.forecaster.permutation_importance",
+            return_value={
+                "importances_mean": np.array([1.0]),
+                "importances_std": np.array([0.0]),
+            },
+        ) as importance:
+            selector.fit(data, target)
+
+        held_out = importance.call_args.args[1]
+        assert held_out["a"].to_list() == list(range(90, 100))
+
+    def test_pfi_selector_keeps_cyclical_pairs_together(self):
+        """A cos without its sin cannot tell morning from afternoon."""
+        selector = PFISelector(estimator=MagicMock())
+        data = DataFrame(
+            {"angle_sin": [1, 2, 3], "angle_cos": [4, 5, 6], "other": [7, 8, 9]}
+        )
+
+        with patch(
+            "pvlearn.forecaster.permutation_importance",
+            return_value={
+                "importances_mean": np.array([0.5, -0.1, 0.5]),
+                "importances_std": np.array([0.0, 0.0, 0.0]),
+            },
+        ):
+            selector.fit(data, Series([1.0, 2.0, 3.0]))
+
+        assert selector.important_features_ == ["angle_sin", "angle_cos", "other"]
+
+    def test_pfi_selector_drops_a_cyclical_pair_when_neither_half_helps(self):
+        selector = PFISelector(estimator=MagicMock())
+        data = DataFrame(
+            {"angle_sin": [1, 2, 3], "angle_cos": [4, 5, 6], "other": [7, 8, 9]}
+        )
+
+        with patch(
+            "pvlearn.forecaster.permutation_importance",
+            return_value={
+                "importances_mean": np.array([-0.2, -0.1, 0.5]),
+                "importances_std": np.array([0.0, 0.0, 0.0]),
+            },
+        ):
+            selector.fit(data, Series([1.0, 2.0, 3.0]))
+
+        assert selector.important_features_ == ["other"]
+
+    def test_pfi_selector_holdout_leaves_both_sides_non_empty(self):
+        """Frames too short for a tenth still have to split somewhere."""
+        assert PFISelector._holdout_start(3) == 2
+        assert PFISelector._holdout_start(2) == 1
+        assert PFISelector._holdout_start(100) == 90
+
+    def test_pfi_selector_splits_a_plain_array_target(self):
+        """`Forecaster` passes a Series, but a Pipeline caller may hand the
+        step a bare array."""
+        train, test = PFISelector._split_target(np.arange(10), 8)
+
+        assert train.tolist() == [0, 1, 2, 3, 4, 5, 6, 7]
+        assert test.tolist() == [8, 9]
 
 
 class TestForecasterPreparePreprocessor:

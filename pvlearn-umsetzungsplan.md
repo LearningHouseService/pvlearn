@@ -109,6 +109,7 @@ Jedes persistierte Modell trägt:
 {
   "pvlearn_version": "0.1.0",
   "feature_schema_version": 1,
+  "pipeline_version": 2,
   "sklearn_version": "1.9.0",
   "weather_provider": "open-meteo",
   "interval_minutes": 60,
@@ -120,7 +121,9 @@ Jedes persistierte Modell trägt:
 }
 ```
 
-Beim Laden gilt hart: **Stimmt `feature_schema_version`, die sklearn-Minor-Version, der Provider, das Intervall oder die Location nicht überein, wird das Modell verworfen und neu trainiert.** Kein Migrationsversuch, kein Best-Effort-Laden. Stumme Fehlprognosen durch ein Modell, das auf einem anderen Feature-Set trainiert wurde, sind praktisch nicht debugbar.
+Beim Laden gilt hart: **Stimmt `feature_schema_version`, `pipeline_version`, die sklearn-Minor-Version, der Provider, das Intervall oder die Location nicht überein, wird das Modell verworfen und neu trainiert.** Kein Migrationsversuch, kein Best-Effort-Laden. Stumme Fehlprognosen durch ein Modell, das auf einem anderen Feature-Set trainiert wurde, sind praktisch nicht debugbar.
+
+Die beiden Versionsfelder trennen zwei Dinge, die sich unabhängig ändern: `feature_schema_version` versioniert das Feature-Vokabular aus 3.1, `pipeline_version` die Art, wie aus diesen Spalten ein Modell gebaut wird — Vorverarbeitungsschritte, Feature-Auswahl, Schätzer. Phase 1c hat den Selektor geändert, ohne eine einzige Spalte anzufassen; ohne das zweite Feld hätte kein Bestandsmodell invalidiert.
 
 Zur sklearn-Version: die Phase-0-Baseline ist nur gegen exakt die Version reproduzierbar, unter der sie entstanden ist. `pvlearn` pinnt scikit-learn deshalb exakt (siehe 6.6); ein Bump verschiebt still jede Prognose und erfordert eine neu erzeugte Baseline.
 
@@ -229,6 +232,31 @@ Ohne diesen Schritt ist Phase 1a nicht verifizierbar.
 - [x] Bestandsnutzer trainieren beim Update automatisch neu, ohne Fehler im Log. Erbracht in [solaredge2mqtt PR #420](https://github.com/DerOetzi/solaredge2mqtt/pull/420): der OWM-Adapter übersetzt beim Lesen aus InfluxDB, nicht beim Schreiben, damit die vorhandene Historie ohne Migration weiter trainierbar bleibt; der `power_period`-Shim leitet das Feld lokal aus `energy_period` ab. Verifiziert mit dem dortigen Wiring-Regressionstest über 9580 Zeilen echter Historie.
 
 **Release:** `pvlearn 0.2.0`, `solaredge2mqtt` Minor mit Changelog-Hinweis zur Deprecation von `power_period` und zum einmaligen Neutraining.
+
+---
+
+### Phase 1c — Korrektur der Feature-Auswahl
+
+**Ziel:** Die drei in ADR 0001 offengelassenen Mängel am `PFISelector` sind behoben, bevor Modelle außerhalb von solaredge2mqtt entstehen.
+
+Vorgezogen vor Phase 2 gegen die Regel aus Kapitel 7 („alles aus Kapitel 6 nach Phase 4"). Begründung: der gemischte Split ist ein Defekt, kein Abwägungspunkt, und seine Korrektur invalidiert jedes trainierte Modell. Solange nur solaredge2mqtt-Bestandsnutzer betroffen sind, kostet das ein automatisches Neutraining, das in Phase 1b ohnehin stattfindet. Nach dem Service-Release träfe es zusätzlich Add-on- und HACS-Nutzer — und bis dahin steckte die zu optimistische Importance in jeder ausgelieferten Prognose.
+
+- Importance wird auf dem **jüngsten Zehntel** der Zeilen gemessen statt auf einem zufälligen. `train_test_split(..., test_size=0.1, random_state=42)` mischt per Default; auf stündlich autokorrelierten Daten liegt zu jeder Testzeile deren Nachbarschaft in der Trainingshälfte.
+- Die Schwelle wird **rauschbewusst**: `mean - 1·std > 0`. `permutation_importance` liefert `importances_std` ohne Zusatzkosten mit.
+- **Zyklische Paare bleiben zusammen.** `sin` und `cos` eines Winkels sind ein Feature in zwei Spalten; ein `cos` ohne sein `sin` unterscheidet Vormittag nicht von Nachmittag.
+- `pipeline_version` in den Modell-Metadaten einführen (siehe 3.4), sonst greift keine Invalidierung — das Feature-Vokabular ändert sich nicht.
+
+Begründung, Messtabelle und die verworfenen Alternativen in `docs/adr/0002-noise-aware-chronological-feature-selection.md`.
+
+**Abnahme:**
+- [x] Prognosequalität auf dem Referenzdatensatz nicht schlechter als die Baseline, gleiche Toleranz wie Phase 1a/1b. Gemessen: 607,82 Wh MAE gegenüber 620,88 Wh, R² 0,8921 gegenüber 0,8859 — erstmals besser statt nur innerhalb der Toleranz. Erbracht durch `tests/test_extraction_regression.py`.
+- [x] Der Selektor misst nachweislich auf den jüngsten Zeilen, nicht auf einer Stichprobe. `test_pfi_selector_measures_importance_on_the_most_recent_rows` prüft die Zeilen, die tatsächlich bei `permutation_importance` ankommen.
+- [x] Ein vor 1c persistiertes Modell wird beim Laden mit klarer Begründung abgelehnt statt geladen. `test_load_rejects_a_model_from_an_older_pipeline` entfernt das Feld aus dem Sidecar, wie es vor 1c aussah, und erwartet `pipeline_version is 1`.
+- [x] Kein `sin` wird ohne sein `cos` behalten und umgekehrt.
+
+**Release:** `pvlearn 0.2.1`. Für Bestandsnutzer ein einmaliges automatisches Neutraining, im Changelog angekündigt.
+
+Offen bleibt, was ADR 0001 und Kapitel 6 Punkt 7 offen lassen: Boruta, `SequentialFeatureSelector`, und die Frage, ob der Selektor überhaupt bleiben soll. Alle drei brauchen Daten von mehr als einer Anlage.
 
 ---
 
@@ -392,14 +420,14 @@ Diese Punkte sollten vor Beginn der jeweiligen Phase geklärt werden. Entschiede
 
    **Nachtrag aus Phase 1b:** Die Toleranz deckt Hardware-Rauschen ab, nicht Modelländerungen. Als das kanonische Schema die Feature-Auswahl kippen ließ (Punkt 7), hätte sie die Verschlechterung still absorbiert. Die Ursache wurde stattdessen isoliert und behoben; eine Abweichung innerhalb der Toleranz ist kein Freibrief, sondern ein Anlass nachzusehen, ob sie von der Maschine kommt oder vom Modell.
 
-7. **Feature-Selektion:** Phase 1b hat `PFISelector` von einer Quantils- auf eine absolute Schwelle umgestellt (`importance > 0`), weil ein Quantil die Auswahl an die Zahl der gelieferten Provider-Spalten koppelt — Begründung und Messtabelle in `docs/adr/0001-feature-selection-threshold.md`. Das ist die kleinstmögliche Korrektur, nicht das Optimum. Für später, nach Priorität:
+7. **Feature-Selektion:** Phase 1b hat `PFISelector` von einer Quantils- auf eine absolute Schwelle umgestellt (`importance > 0`), weil ein Quantil die Auswahl an die Zahl der gelieferten Provider-Spalten koppelt — Begründung und Messtabelle in `docs/adr/0001-feature-selection-threshold.md`. Phase 1c hat darauf aufgesetzt: chronologische Messung, rauschbewusste Schwelle `mean - 1·std > 0`, zyklische Paare zusammengehalten (`docs/adr/0002-noise-aware-chronological-feature-selection.md`). Was danach noch offen ist, nach Priorität:
 
-   - **Rauschbewusste Schwelle:** `permutation_importance` liefert `importances_std` gleich mit. `mean - k·std > 0` filtert Features, deren Importance nur Rauschen ist, kostet keinen zusätzlichen Fit und bleibt kandidatenzahl-unabhängig. Der naheliegendste nächste Schritt.
+   - ~~**Rauschbewusste Schwelle**~~ — **entschieden in Phase 1c**, `k = 1`, a priori gewählt statt aus der Messtabelle abgelesen. Siehe ADR 0002.
    - **Boruta / Shadow Features:** Vergleich gegen permutierte Kopien jedes Features. Statistisch sauber begründet, kostet mehrere Fits.
    - **`SequentialFeatureSelector` oder RFECV mit `TimeSeriesSplit`:** optimiert direkt die Zielmetrik statt einer Heuristik und wählt die Feature-Zahl über den CV-Score. Teuer — verschärft Punkt 4 auf schwacher Hardware deutlich.
    - **Selector ganz streichen:** auf dem Referenzdatensatz liegt „keine Auswahl" (638,23 Wh) gleichauf mit `importance > 0` (641,54 Wh) und besser als das alte Perzentil 75 (668,51 Wh). `HistGradientBoostingRegressor` ist gegenüber irrelevanten Features robust. Entscheidbar erst mit Daten mehrerer Anlagen, weil `selected_features` Teil der Modell-Metadaten aus 3.4 ist.
 
-   **Unabhängiger Defekt, gleiche Stelle:** `PFISelector.fit` splittet mit `train_test_split(..., test_size=0.1, random_state=42)`, also per Default gemischt. Auf stündlich autokorrelierten Daten landen Nachbarstunden in beiden Hälften und die Importances fallen systematisch zu optimistisch aus. Ein chronologischer Split ist korrekt; die Änderung invalidiert jedes trainierte Modell und gehört deshalb in dieselbe Runde wie eine der obigen Umstellungen.
+   ~~**Unabhängiger Defekt, gleiche Stelle:**~~ — **behoben in Phase 1c.** Der gemischte Split hielt auf dem Referenzdatensatz sieben Features für wichtig, die ein chronologischer verwirft, darunter `time_dst` und `time_daylight` — über lange Strecken konstant und deshalb aus jeder Nachbarzeile rekonstruierbar.
 
 ---
 
