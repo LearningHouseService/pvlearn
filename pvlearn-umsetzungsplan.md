@@ -1,13 +1,15 @@
 # pvlearn — Umsetzungsplan
 
 **Repository:** `LearningHouseService/pvlearn`
-**Ziel:** Herauslösen des ML-Forecast-Teils aus `DerOetzi/solaredge2mqtt` in eine eigenständige, anlagenunabhängige Library nebst REST-Service, Home-Assistant-Add-on und HACS-Integration.
+**Ziel:** Herauslösen des ML-Forecast-Teils aus `DerOetzi/solaredge2mqtt` in eine eigenständige, anlagenunabhängige Library.
 
 **Tagline:** *Teach your home to predict its own solar production.*
 
 ---
 
 ## 1. Zielbild und Abgrenzung
+
+**Scope-Reduktion:** Ursprünglich hier mitgeplant, jetzt gestrichen: REST-Service, Home-Assistant-Add-on und HACS-Integration unter der Domain `pvlearn`. Diese Rolle übernimmt künftig `learninghouse` (eigenes Repo, eigene Roadmap), das pvlearn als Dependency einbindet und dafür selbst Add-on und Integration bekommt. pvlearn bleibt reine Library — siehe Kapitel 4 für den dadurch verkürzten Phasenplan.
 
 ### Was pvlearn ist
 
@@ -21,7 +23,7 @@ Ein selbstlernender PV-Ertragsprognose-Stack, der auf den **eigenen historischen
 
 ### Architekturprinzip
 
-Die Library ist **I/O-frei**. Kein MQTT, kein InfluxDB, kein HTTP, kein Dateisystemzugriff außerhalb explizit übergebener Pfade. Rein: DataFrames und typisierte Modelle. Raus: Prognosen. Alles andere sind Adapter in den darüberliegenden Schichten. Genau das macht sie gleichzeitig in `solaredge2mqtt` einbettbar und als Service betreibbar.
+Die Library ist **I/O-frei**. Kein MQTT, kein InfluxDB, kein HTTP, kein Dateisystemzugriff außerhalb explizit übergebener Pfade. Rein: DataFrames und typisierte Modelle. Raus: Prognosen. Alles andere sind Adapter in den darüberliegenden Schichten. Genau das macht sie in `solaredge2mqtt` einbettbar und ebenso in `learninghouse`, ohne dass pvlearn selbst je ein Netzwerk-Interface bräuchte.
 
 ---
 
@@ -29,13 +31,10 @@ Die Library ist **I/O-frei**. Kein MQTT, kein InfluxDB, kein HTTP, kein Dateisys
 
 | Artefakt | Name | Repository |
 |---|---|---|
-| Library + Service | `pvlearn`, Service als Extra `pvlearn[service]` | `LearningHouseService/pvlearn` |
+| Library | `pvlearn` | `LearningHouseService/pvlearn` |
 | PyPI-Paket | `pvlearn` | — |
-| Docker-Image | `ghcr.io/learninghouseservice/pvlearn` | — |
-| HA-Add-on-Slug | `pvlearn` | `LearningHouseService/hassio-addons` |
-| HACS-Integration | Domain `pvlearn` | `LearningHouseService/pvlearn-hass` |
 
-Library und Service liegen in **einem** Repository, weil sie im selben Takt released werden. Zwei Repos bedeuten zwei Release-Zyklen und eine Versions-Kompatibilitätsmatrix ohne Gegenwert. Die HACS-Integration bekommt ein eigenes Repo, weil HACS das erzwingt und ihr Release-Zyklus an Home-Assistant-Versionen hängt, nicht an denen von pvlearn.
+Docker-Image, HA-Add-on und HACS-Integration entstehen nicht unter dem Namen `pvlearn`. Das baut künftig `learninghouse`, das pvlearn als Dependency einbindet; deren Namensschema gehört in dessen eigene Planung, nicht in dieses Dokument.
 
 **Lizenz:** MIT, konsistent mit `solaredge2mqtt` und `learninghouse`.
 
@@ -97,7 +96,7 @@ Auf dem Referenzdatensatz aus Phase 0 ist das empirisch bestätigt: MAE 620,88 W
 
 Eine Prüfung der bekannten Konsumenten stützt das: `power_period` wird zwar nach MQTT publiziert und von der HACS-Integration `solaredge2mqtt_forecast` in `ForecastData.power_period` eingelesen — **verwendet wird es dort nirgends**. Der Energy-Dashboard-Provider arbeitet ausschließlich mit `energy_period`, Sensor-Entitäten für Leistung existieren nicht. Der Wert wird berechnet, publiziert, nach InfluxDB geschrieben, geparst und dann verworfen.
 
-Es bleibt ein Breaking Change für unbekannte Dritt-Subscriber des MQTT-Topics. Behandlung analog zu Phase 5: Feld als deprecated ankündigen, mindestens zwei Minor-Releases weiter publizieren, dann entfernen. Im Changelog mit dem Hinweis, dass sich die Momentanleistung aus `energy_period` und dem Intervall trivial selbst berechnen lässt.
+Es bleibt ein Breaking Change für unbekannte Dritt-Subscriber des MQTT-Topics. Behandlung: Feld in solaredge2mqtt als deprecated ankündigen, mindestens zwei Minor-Releases weiter publizieren, dann entfernen. Im Changelog mit dem Hinweis, dass sich die Momentanleistung aus `energy_period` und dem Intervall trivial selbst berechnen lässt.
 
 Für pvlearn selbst gibt es nichts zu deprecaten — die Library ist neu und publiziert den Wert nie.
 
@@ -127,7 +126,7 @@ Die beiden Versionsfelder trennen zwei Dinge, die sich unabhängig ändern: `fea
 
 Zur sklearn-Version: die Phase-0-Baseline ist nur gegen exakt die Version reproduzierbar, unter der sie entstanden ist. `pvlearn` pinnt scikit-learn deshalb exakt (siehe 6.6); ein Bump verschiebt still jede Prognose und erfordert eine neu erzeugte Baseline.
 
-**Persistenzformat:** joblib/Pickle. ONNX wurde geprüft und verworfen — `CyclicalEncoder`, `TimeEncoder`, `SunEncoder` und `PFISelector` sind Custom-Transformer und bräuchten je einen eigenen Shape Calculator plus Converter. Der ursprüngliche Motivator (leichtgewichtige Inferenz in der HA-Integration) entfällt ohnehin, weil die Integration in der Zielarchitektur ein reiner REST-Client ist.
+**Persistenzformat:** joblib/Pickle. ONNX wurde geprüft und verworfen — `CyclicalEncoder`, `TimeEncoder`, `SunEncoder` und `PFISelector` sind Custom-Transformer und bräuchten je einen eigenen Shape Calculator plus Converter. Der ursprüngliche Motivator (leichtgewichtige Inferenz direkt in einer HA-Integration) entfällt ohnehin: Inferenz läuft serverseitig, im Prozess des Aufrufers (`solaredge2mqtt` heute, `learninghouse` künftig), keine HA-Integration bettet pvlearn selbst ein.
 
 
 ### 3.5 Prognoseauflösung
@@ -159,12 +158,19 @@ Open-Meteo kann 15 Minuten, aber wenn der Wechselrichter nur Stundenwerte meldet
 
 *Rechenaufwand.* Vier Mal so viele Trainingszeilen verschärfen Punkt 6.4 unmittelbar.
 
-Frühestens Phase 6, konsistent mit der Gegenmaßnahme zum Scope-Creep-Risiko in Kapitel 7.
+Frühestens dann, wenn Messdaten in feinerer Auflösung vorliegen — unabhängig davon, ob pvlearn dann von `solaredge2mqtt`, `learninghouse` oder beiden aus aufgerufen wird.
+
+### 3.6 Trainingsdaten-Vertrag
+
+**Kritisch und leicht falsch zu bauen:** Trainiert wird auf der Wettervorhersage, die zum Messzeitpunkt aktuell war — nicht auf nachträglich beobachtetem Wetter. Das ist korrekt, weil Trainings- und Inferenzverteilung übereinstimmen müssen; zur Inferenzzeit existiert nur die Vorhersage, nie die Beobachtung. Ein auf Beobachtungen trainiertes Modell bekäme systematisch andere Eingaben, als es bei der Vorhersage sehen wird.
+
+Das ist keine pvlearn-Eigenschaft, sondern eine Anforderung an jeden Aufrufer: Wer Trainingszeilen zusammenstellt (heute `solaredge2mqtt`, künftig `learninghouse`), muss pro Zeile die Vorhersage ablegen, die zum Vorhersagezeitpunkt für dieses Intervall galt, und sie über den Zeitstempel mit dem später gemessenen Energiewert verknüpfen. pvlearn selbst kann das nicht prüfen — dafür müsste es Wetterdaten selbst holen, und genau das tut es laut Architekturprinzip (Kapitel 1) nie.
+
 ---
 
 ## 4. Phasenplan
 
-Die ursprünglich geplante Reihenfolge wird an zwei Stellen angepasst: Phase 1 wird zweigeteilt, und das Add-on wird vor die HACS-Integration gezogen.
+Die ursprünglich geplante Reihenfolge wurde an einer Stelle angepasst: Phase 1 wurde zweigeteilt (1a Extraktion, 1b Konsolidierung), ergänzt um die vorgezogene Korrektur in 1c. Ursprünglich folgten danach REST-Service, HA-Add-on und HACS-Integration als eigene Phasen — die sind gestrichen (siehe Kapitel 1). Der Plan hier endet mit der fertigen Library.
 
 ### Phase 0 — Vorbereitung
 
@@ -239,7 +245,7 @@ Ohne diesen Schritt ist Phase 1a nicht verifizierbar.
 
 **Ziel:** Die drei in ADR 0001 offengelassenen Mängel am `PFISelector` sind behoben, bevor Modelle außerhalb von solaredge2mqtt entstehen.
 
-Vorgezogen vor Phase 2 gegen die Regel aus Kapitel 7 („alles aus Kapitel 6 nach Phase 4"). Begründung: der gemischte Split ist ein Defekt, kein Abwägungspunkt, und seine Korrektur invalidiert jedes trainierte Modell. Solange nur solaredge2mqtt-Bestandsnutzer betroffen sind, kostet das ein automatisches Neutraining, das in Phase 1b ohnehin stattfindet. Nach dem Service-Release träfe es zusätzlich Add-on- und HACS-Nutzer — und bis dahin steckte die zu optimistische Importance in jeder ausgelieferten Prognose.
+Vorgezogen gegen die damalige Priorisierungsregel, alles Offene aus Kapitel 6 erst nach dem MVP anzugehen (der REST-Service war zu diesem Zeitpunkt noch als nächste Phase geplant, siehe Kapitel 4). Begründung: der gemischte Split ist ein Defekt, kein Abwägungspunkt, und seine Korrektur invalidiert jedes trainierte Modell. Solange nur solaredge2mqtt-Bestandsnutzer betroffen sind, kostet das ein automatisches Neutraining, das in Phase 1b ohnehin stattfindet. Mit jedem weiteren Aufrufer träfe es mehr Nutzer — und bis dahin steckte die zu optimistische Importance in jeder ausgelieferten Prognose.
 
 - Importance wird auf dem **jüngsten Zehntel** der Zeilen gemessen statt auf einem zufälligen. `train_test_split(..., test_size=0.1, random_state=42)` mischt per Default; auf stündlich autokorrelierten Daten liegt zu jeder Testzeile deren Nachbarschaft in der Trainingshälfte.
 - Die Schwelle wird **rauschbewusst**: `mean - 1·std > 0`. `permutation_importance` liefert `importances_std` ohne Zusatzkosten mit.
@@ -260,121 +266,11 @@ Offen bleibt, was ADR 0001 und Kapitel 6 Punkt 7 offen lassen: Boruta, `Sequenti
 
 ---
 
-### Phase 2 — REST-Service
+### Danach: Einbettung statt eigener Service
 
-**Ziel:** Eigenständig betreibbarer Service mit konfigurierbaren Wetter-Providern, Trainingsdatenhaltung und Prognose-Endpunkt.
+Ursprünglich für dieses Repository geplant: ein REST-Service mit Brain-Konzept (übernommen aus `learninghouse`), ein Home-Assistant-Add-on und eine HACS-Integration unter der Domain `pvlearn`, inklusive Migrationspfad weg von `solaredge2mqtt_forecast`. Das entfällt komplett — `learninghouse` bekommt Service, Add-on und Integration in eigener Rolle, mit eigener Roadmap in seinem Repository.
 
-#### Brain-Konzept
-
-Ein Brain = eine PV-Anlage. Übernommen aus `learninghouse`, inklusive Verzeichnisstruktur:
-
-```
-brains/
-  <brain_id>/
-    config.json          # Location, Provider, Hyperparameter-Flags
-    training_data.sqlite # Wetter-Snapshots + gemessene Energie
-    trained.pkl          # Modell
-    metadata.json        # siehe 3.4
-```
-
-**Speicher:** SQLite, nicht InfluxDB. Bei stündlicher Auflösung fallen 8.760 Zeilen pro Jahr an — dafür braucht es keine Zeitreihendatenbank, und ein Add-on, das InfluxDB voraussetzt, installiert kaum jemand. Optional später ein Export-Endpunkt nach InfluxDB.
-
-#### Trainingsdaten-Semantik
-
-**Kritisch und leicht falsch zu bauen:** Der bestehende Code trainiert auf der *Vorhersage*, die eine Stunde zuvor für die betreffende Stunde galt — nicht auf beobachtetem Wetter. Das ist korrekt, weil Trainings- und Inferenzverteilung übereinstimmen müssen; ein auf Messwerten trainiertes Modell bekommt zur Inferenzzeit systematisch andere Eingaben.
-
-Für die API bedeutet das eine klare Arbeitsteilung:
-
-1. Der Service ruft **stündlich selbst** beim Provider die Vorhersage ab und persistiert den Snapshot für die kommende Stunde.
-2. Der Client (solaredge2mqtt, HA-Integration, beliebig) pusht nachträglich nur `{timestamp, energy_wh}`.
-3. Der Join geschieht serverseitig über den Zeitstempel.
-
-Der Client braucht damit keinerlei Wetterkenntnis. Das ist die eigentliche Vereinfachung gegenüber heute.
-
-#### API-Entwurf
-
-```
-GET    /api/v1/brains                        Liste
-POST   /api/v1/brains                        Anlegen (Location, Provider, Optionen)
-GET    /api/v1/brains/{id}                   Config + Status
-PUT    /api/v1/brains/{id}                   Ändern (invalidiert Modell bei Location-/Provider-Wechsel)
-DELETE /api/v1/brains/{id}
-
-POST   /api/v1/brains/{id}/measurements      [{timestamp, energy_wh}, ...]
-POST   /api/v1/brains/{id}/train             Training anstoßen (async, 202)
-GET    /api/v1/brains/{id}/status            is_trained, rows, last_training, metrics, features
-GET    /api/v1/brains/{id}/forecast          ?days=2 → Intervallwerte + Aggregate
-GET    /api/v1/providers                     verfügbare Provider + max. Horizont
-GET    /health
-```
-
-Der Prognosehorizont ist providerabhängig und wird nicht hart kodiert: OpenWeatherMap One Call liefert 48 h stündlich, Open-Meteo bis zu 16 Tage. `GET /forecast` liefert maximal `min(days, provider_horizon)` und meldet den tatsächlichen Horizont im Response mit, zusammen mit dem Intervall der gelieferten Werte.
-
-**Auth:** API-Key-Mechanismus aus `learninghouse` übernehmen.
-
-#### Provider-Adapter
-
-- **Open-Meteo** als Default. Kostenlos, kein API-Key, liefert GHI/DNI/DHI, für DE zusätzlich ICON-D2. Der Wegfall der OWM-Pflicht ist der wichtigste Adoptionshebel des Projekts.
-- **OpenWeatherMap** als Option für Bestandsnutzer.
-- **DWD** direkt: optional, später.
-- Interface als `Protocol` in pvlearn, Adapter im Service-Extra.
-
-**Abnahme:**
-- Service läuft standalone im Container, legt Brain an, sammelt Wetter-Snapshots, nimmt Messwerte entgegen, trainiert nach 60 h, liefert Prognosen.
-- Zwei Brains mit unterschiedlichen Zeitzonen laufen parallel korrekt.
-- Provider-Wechsel invalidiert das Modell nachweislich.
-- OpenAPI-Schema ist vollständig, `/docs` nutzbar.
-
-**Release:** `pvlearn 0.3.0` mit `[service]`-Extra, Docker-Image auf ghcr.
-
----
-
-### Phase 3 — Home-Assistant-Add-on
-
-**Ziel:** Ein-Klick-Installation des Services für HA-Nutzer. Vorgezogen vor die HACS-Integration, weil diese ohne laufenden Service wertlos ist und der erste Eindruck sonst „ich muss erst irgendwo Docker aufsetzen" lautet.
-
-- Add-on-Repository `LearningHouseService/hassio-addons` anlegen.
-- `config.yaml` mit Optionen: Provider, API-Key (falls OWM), Log-Level, Port.
-- Multi-Arch-Build: `amd64`, `aarch64`. **`armv7` wird nicht unterstützt** — dieselbe Dependency-Problematik wie bisher in solaredge2mqtt, das gehört prominent in die Doku.
-- Ingress für die Konfigurations-UI (falls aus learninghouse übernommen).
-- Persistenz des `brains`-Verzeichnisses über `/data`.
-
-**Abnahme:** Add-on installiert sich auf HAOS aus dem Repository, startet, überlebt Neustart und Add-on-Update mit erhaltenem Modell.
-
----
-
-### Phase 4 — HACS-Integration
-
-**Ziel:** `pvlearn`-Integration in Home Assistant, vergleichbar mit `solaredge2mqtt_forecast`, aber als REST-Client gegen den Service.
-
-- Config Flow: Host, Port, API-Key, Auswahl/Anlage des Brains, Auswahl der Energie-Entität als Datenquelle.
-- **DataUpdateCoordinator** holt zyklisch die Prognose.
-- **Messwert-Push:** stündlich den Energieertrag der letzten Stunde aus der gewählten Entität ermitteln und an den Service senden. Quelle: `recorder`-Statistics (`statistics_during_period`), nicht der aktuelle State — sonst gehen Werte bei HA-Neustarts verloren.
-- Entitäten: Sensoren analog zum bestehenden Forecast-Modell (heute, heute verbleibend, aktuelle Stunde, nächste Stunde, morgen) plus Diagnose-Sensoren (Modellstatus, Trainingsdatenpunkte, MAE).
-- **Solar-Forecast-Provider für das Energy Dashboard** implementieren — das ist der eigentliche Mehrwert für Endnutzer.
-- Dependencies im `manifest.json`: nur ein schlanker HTTP-Client. Kein numpy, kein sklearn, kein pandas.
-
-**Abnahme:**
-- Integration installiert sich über HACS, Config Flow durchläuft, Entitäten erscheinen.
-- Prognose ist im Energy Dashboard als Solar-Forecast auswählbar.
-- Kein Blocking-Call im Event-Loop (HA-Warnung „doing blocking calls" bleibt aus).
-
----
-
-### Phase 5 — Migration und Deprecation
-
-**`solaredge2mqtt_forecast`** wird **nicht umbenannt**. Ein Domain-Wechsel bricht bei Bestandsnutzern den Config Entry, die Entity-IDs und damit die Recorder-Statistiken — gerade beim Energy Dashboard schmerzhaft.
-
-Stattdessen:
-
-1. `pvlearn` als neue Domain parallel ausliefern.
-2. `solaredge2mqtt_forecast` als deprecated markieren, Repo-Beschreibung und README anpassen, Repair-Issue in HA anzeigen.
-3. Migrationsdokument: welche Entitäten entsprechen einander, wie überträgt man Long-Term-Statistics (bzw. dass man es nicht kann und was das bedeutet).
-4. Mindestens zwei Minor-Releases Karenz, dann Archivierung.
-
-**solaredge2mqtt** behält den eingebauten Forecast über die Library — der Service ist für dessen Nutzer **kein** Pflichtbestandteil. Wer InfluxDB und OWM bereits betreibt, ändert nichts außer der Konfiguration des Wetter-Providers.
-
-**`power_period` entfernen.** Die in Phase 1b begonnene Deprecation-Frist läuft hier aus: der Ableitungs-Shim in solaredge2mqtt fällt weg, das Feld verschwindet aus dem MQTT-Payload, und `ForecastData.power_period` verschwindet aus der HACS-Integration, die es ohnehin nie verwendet hat.
+pvlearn bleibt dafür genau das, was Kapitel 1 beschreibt: eine I/O-freie Library, die `solaredge2mqtt` heute schon einbindet und `learninghouse` künftig ebenso einbindet. Alles, was ein Aufrufer dafür wissen muss, steht in Kapitel 3 (kanonisches Schema, Metadaten-Vertrag, Trainingsdaten-Vertrag). Was an der Library selbst noch offen ist, unabhängig vom Aufrufer, steht in Kapitel 6.
 
 ---
 
@@ -386,13 +282,11 @@ Stattdessen:
 - Encoder-Unit-Tests: insbesondere `SunEncoder` gegen bekannte Sonnenstände und `CyclicalEncoder` an den Wrap-Around-Grenzen (359° → 0°).
 - Property-Test: fehlende optionale Feature-Spalten dürfen nie zu einer Exception führen, nur zu einem kleineren Feature-Set.
 - Zeitzonen-Tests mit mindestens einer Nicht-UTC-Zone und über einen DST-Wechsel hinweg. Der bestehende Code hat hier Prozess-globale Annahmen; beim Umbau auf Multi-Tenancy ist das die wahrscheinlichste Fehlerquelle.
-- Service-Tests mit gemocktem Provider, damit CI ohne Netz läuft.
 
 ### Versionierung
 
 - pvlearn folgt SemVer. Ein Bump von `feature_schema_version` ist immer mindestens ein Minor-Release mit Changelog-Eintrag.
-- `solaredge2mqtt` pinnt pvlearn auf `>=X.Y,<X+1`.
-- Die HACS-Integration prüft beim Setup die Service-Version und meldet Inkompatibilität als Repair-Issue, statt still zu scheitern.
+- `solaredge2mqtt` pinnt pvlearn auf `>=X.Y,<X+1`. `learninghouse` wird beim Einbinden dasselbe Pinning-Schema übernehmen.
 
 ### Dokumentation
 
@@ -401,7 +295,6 @@ Mindestumfang vor dem ersten öffentlichen Release der Library:
 - README mit Abgrenzung zu Forecast.Solar/Solcast — die Frage „warum noch eine Solarprognose" kommt garantiert und verdient eine gute Antwort.
 - Erklärung, warum auf Vorhersagewetter statt Messwetter trainiert wird. Das ist kontraintuitiv und wird sonst als Bug gemeldet.
 - Hinweis auf die 60-Stunden-Mindestdatenmenge und darauf, dass die Qualität über Wochen deutlich steigt.
-- armv7-Einschränkung prominent.
 
 ---
 
@@ -409,11 +302,11 @@ Mindestumfang vor dem ersten öffentlichen Release der Library:
 
 Diese Punkte sollten vor Beginn der jeweiligen Phase geklärt werden. Entschiedene Punkte bleiben mit Verweis auf die Begründung stehen, statt gelöscht zu werden.
 
-1. ~~**Prognoseintervall**~~ — **entschieden**, siehe 3.5. Das MVP rechnet stündlich, das Datenmodell hält feinere Auflösungen offen. Eine Implementierung kommt frühestens in Phase 6 und setzt voraus, dass die Messdatenerfassung auf der Client-Seite mitzieht.
-2. **Unsicherheitsbänder:** `HistGradientBoostingRegressor` kann über `loss="quantile"` Quantilsprognosen liefern. Ein p10/p50/p90-Band wäre für Batteriesteuerung deutlich wertvoller als ein Punktwert — kostet aber drei Modelle statt einem, was der Konsolidierung aus 3.3 entgegenläuft. Kandidat für Phase 6.
-3. **Mehrere Strings pro Anlage:** Ost-West-Anlagen könnten von getrennten Modellen je Ausrichtung profitieren. Erfordert, dass der Client getrennte Energiewerte liefert. Als optionales Feature denkbar; erhöht die Komplexität der API spürbar.
-4. **Hyperparameter-Tuning im Service:** `GridSearchCV` über neun Kombinationen ist auf einem Raspberry Pi grenzwertig. Entweder deaktivieren, auf gelegentlich (wöchentlich) begrenzen oder auf `HalvingGridSearchCV` wechseln.
-5. **Rückwärtsbefüllung:** Soll die HA-Integration beim Setup historische Werte aus dem Recorder nachliefern können? Das würde die Wartezeit bis zur ersten Prognose drastisch verkürzen — allerdings fehlen für die Vergangenheit die passenden Wetter-*Vorhersagen*. Open-Meteo bietet eine Historical-Forecast-API, die genau das liefert (archivierte Vorhersagen statt Reanalyse). Technisch die eleganteste Lösung des Kaltstartproblems, aber nicht trivial.
+1. ~~**Prognoseintervall**~~ — **entschieden**, siehe 3.5. Das MVP rechnet stündlich, das Datenmodell hält feinere Auflösungen offen. Eine Implementierung kommt frühestens, wenn die Messdatenerfassung auf Aufrufer-Seite mitzieht.
+2. **Unsicherheitsbänder:** `HistGradientBoostingRegressor` kann über `loss="quantile"` Quantilsprognosen liefern. Ein p10/p50/p90-Band wäre für Batteriesteuerung deutlich wertvoller als ein Punktwert — kostet aber drei Modelle statt einem, was der Konsolidierung aus 3.3 entgegenläuft. Kandidat für eine spätere Ausbaustufe der Library, unabhängig vom Aufrufer.
+3. **Mehrere Strings pro Anlage:** Ost-West-Anlagen könnten von getrennten Modellen je Ausrichtung profitieren. Erfordert, dass der Aufrufer getrennte Energiewerte liefert. Als optionales Feature denkbar; erhöht die Komplexität der Library-Schnittstelle spürbar.
+4. **Hyperparameter-Tuning:** `GridSearchCV` über neun Kombinationen ist auf schwacher Hardware (z. B. Raspberry Pi) grenzwertig. Entweder deaktivieren, auf gelegentlich (wöchentlich) begrenzen oder auf `HalvingGridSearchCV` wechseln.
+5. ~~**Rückwärtsbefüllung**~~ — **außerhalb des Library-Scopes.** Ob und wie ein künftiger Aufrufer (perspektivisch `learninghouse`) beim Setup historische Werte nachliefert, ändert nichts an pvlearn selbst: die Library nimmt Trainingszeilen entgegen, unabhängig davon, ob sie live oder nachträglich zugestellt werden. Das Wetter-Vorhersage-Problem dabei (fehlende historische Vorhersagen, siehe Open-Meteos Historical-Forecast-API) ist ein I/O-Thema und gehört laut Architekturprinzip (Kapitel 1) nicht in pvlearn.
 6. ~~**scikit-learn-Obergrenze**~~ — **entschieden**. Alle Abhängigkeiten sind in `pyproject.toml` exakt gepinnt, wie in `solaredge2mqtt` und `learninghouse`. Empirisch geprüft: die Baseline reproduziert bitidentisch über numpy 2.4.6/2.5.1, pandas 3.0.3/3.0.5 und scipy 1.17.1/1.18.0 hinweg, solange scikit-learn auf 1.9.0 bleibt. Damit ist scikit-learn der einzige *Library*-Pin, an dem die Reproduzierbarkeit hängt — ein Bump erfordert zwingend eine neu erzeugte Baseline und einen Changelog-Eintrag.
 
    **Nachtrag aus Phase 1a:** Bitidentität gilt nur auf derselben Maschine. `HistGradientBoostingRegressor`s Split-Suche reagiert auf CPU-mikroarchitekturabhängiges Floating-Point-Rundungsverhalten (SIMD-Reduktionsreihenfolge) — bei einer knappen Split-Schwelle kippt das den gewählten Split und damit den gesamten Baum, unabhängig von `random_state`, Thread-/Prozesszahl oder Python-Version (alles einzeln getestet und ausgeschlossen). Auf CI-Runnern mit anderer CPU als der Erzeugungsmaschine weichen Prognosen daher sichtbar ab. Regressionstests gegen die Baseline vergleichen deshalb ab Phase 1a Prognosegüte (MAE/R² innerhalb Toleranz) statt exakter Werte — siehe `tests/test_extraction_regression.py`.
@@ -437,10 +330,8 @@ Diese Punkte sollten vor Beginn der jeweiligen Phase geklärt werden. Entschiede
 |---|---|---|
 | Extraktionsfehler bleiben unentdeckt, weil gleichzeitig fachliche Änderungen erfolgen | Schwer lokalisierbare Prognosefehler | Strikte Trennung Phase 1a / 1b, Regressionstest gegen Baseline |
 | Zeitzonen- und DST-Fehler durch Wegfall der Prozess-globalen TZ | Systematisch verschobene Prognosen | Explizite Tests über DST-Wechsel, TZ als Pflichtfeld im Brain |
-| Providerwechsel liefert stumme Qualitätsverschlechterung | Nutzer bemerkt es nicht | Provider Teil der Modell-Metadaten, harte Invalidierung, Metriken im Status-Endpunkt sichtbar |
-| Scope Creep über die offenen Punkte in Kapitel 6 | Projekt kommt nicht zum ersten Release | Phase 1a–2 als MVP definieren, alles aus Kapitel 6 nach Phase 4 |
-| HACS-Aufnahme scheitert an Qualitätsanforderungen | Verteilung nur über Custom Repository | Frühzeitig gegen die HACS- und HA-Integration-Quality-Scale prüfen |
-| Kaltstart von 60 h schreckt Neunutzer ab | Geringe Adoption | Statusanzeige mit Fortschritt in der Integration; mittelfristig Punkt 6.5 |
+| Providerwechsel liefert stumme Qualitätsverschlechterung | Nutzer bemerkt es nicht | Provider Teil der Modell-Metadaten, harte Invalidierung, Metriken in den Metadaten sichtbar |
+| Scope Creep über die offenen Punkte in Kapitel 6 | Library kommt nicht zum Stillstand | Phase 0–1c als Library-Scope; alles aus Kapitel 6 bleibt vertagt, bis mehrere Anlagen Daten liefern oder ein Aufrufer den Bedarf konkret macht |
 
 ---
 
@@ -453,13 +344,9 @@ P1a Extraktion verhaltensgleich                 → pvlearn 0.1.0
  │
 P1b Ein Energiemodell + kanonisches Schema      → pvlearn 0.2.0
  │
-P2  REST-Service + Open-Meteo                   → pvlearn 0.3.0  ← MVP-Ende
- │
-P3  HA-Add-on
- │
-P4  HACS-Integration + Energy-Dashboard-Provider
- │
-P5  Deprecation solaredge2mqtt_forecast
+P1c Chronologische, rauschbewusste Selektion    → pvlearn 0.2.1  ← Library-Scope Ende
 ```
 
-Die drei Entscheidungen, die am schwersten zu revidieren sind und deshalb die meiste Sorgfalt verdienen: das **Feature-Schema** (Kapitel 3.1), die **Trainingsdaten-Semantik** (Phase 2) und die **Prognoseauflösung** (Kapitel 3.5). Die dritte ist inzwischen entschieden; entscheidend bleibt, dass das Intervall von Anfang an ein explizites Feld ist und nirgends implizit als eine Stunde angenommen wird.
+Danach ist pvlearn eine fertige Library mit zwei Aufrufern: `solaredge2mqtt` heute per Dependency, `learninghouse` künftig ebenso — beide außerhalb dieses Plans, mit eigener Roadmap in ihrem jeweiligen Repository.
+
+Die zwei Entscheidungen, die am schwersten zu revidieren sind und deshalb die meiste Sorgfalt verdienen: das **Feature-Schema** (Kapitel 3.1) und der **Trainingsdaten-Vertrag** (Kapitel 3.6). Die **Prognoseauflösung** (Kapitel 3.5) ist inzwischen entschieden; entscheidend bleibt, dass das Intervall von Anfang an ein explizites Feld ist und nirgends implizit als eine Stunde angenommen wird.

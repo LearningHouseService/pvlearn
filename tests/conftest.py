@@ -13,7 +13,7 @@ BASELINE_METADATA = FIXTURES_DIR / "baseline_forecast.json"
 
 #: OpenWeatherMap One Call field names to the canonical schema of chapter 3.1.
 #: The real adapter lives in the consuming application (solaredge2mqtt today,
-#: `pvlearn.service` from Phase 2 on); this one only exists to feed the frozen
+#: learninghouse in the future); this one only exists to feed the frozen
 #: reference export, which was recorded before the schema was canonical, to the
 #: current code.
 OWM_TO_CANONICAL: dict[str, str] = {

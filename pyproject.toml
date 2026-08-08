@@ -1,7 +1,7 @@
 [project]
 name = "pvlearn"
 dynamic = ["version"]
-description = "Self-learning PV production forecast library and service — teach your home to predict its own solar production."
+description = "Self-learning PV production forecast library — teach your home to predict its own solar production."
 readme = { file = "README.md", content-type = "text/markdown" }
 requires-python = ">=3.12,<4"
 license = "MIT"
@@ -62,12 +62,6 @@ dev = [
     # Reading the Parquet reference fixture. The library itself takes DataFrames
     # from its caller and never touches Parquet, so this stays a test dependency.
     "pyarrow==25.0.0",
-]
-service = [
-    "fastapi==0.141.1",
-    "uvicorn[standard]==0.52.1",
-    "httpx==0.28.1",
-    "pyjwt==2.13.0",
 ]
 
 [build-system]

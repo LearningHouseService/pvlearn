@@ -10,9 +10,11 @@ task — it defines what phase the project is in and which changes are in scope.
 
 ## Project Overview
 
-- **Purpose:** Self-learning PV production forecast library and REST service. Trains on a plant's
-  own historical measurements instead of a generic physical plant model (orientation, tilt, kWp) —
-  that is the differentiator against Forecast.Solar and Solcast.
+- **Purpose:** Self-learning PV production forecast library. Trains on a plant's own historical
+  measurements instead of a generic physical plant model (orientation, tilt, kWp) — that is the
+  differentiator against Forecast.Solar and Solcast. No REST service, add-on, or HA integration is
+  built here — `learninghouse` embeds pvlearn and builds those, on its own roadmap. See chapter 1
+  and chapter 4 of the Umsetzungsplan.
 - **Language:** Python (>=3.12, <4)
 - **Package Manager:** pip with `pyproject.toml`
 - **Origin:** extracted from the forecast module of `DerOetzi/solaredge2mqtt`. See the
@@ -20,19 +22,17 @@ task — it defines what phase the project is in and which changes are in scope.
 
 ### Architecture Principle — the library is I/O-free
 
-`pvlearn` core has **no** MQTT, InfluxDB, HTTP, or filesystem access outside explicitly passed
-paths. In: DataFrames and typed models. Out: forecasts. Everything else — weather-provider HTTP
-clients, persistence, the REST API — lives under `pvlearn.service` (the `[service]` extra) or in
-consuming applications. Never add a dependency on `fastapi`, `httpx`, or similar to the core
-package; if a change needs one, it belongs in `pvlearn.service`.
+`pvlearn` has **no** MQTT, InfluxDB, HTTP, or filesystem access outside explicitly passed paths.
+In: DataFrames and typed models. Out: forecasts. Everything else — weather-provider HTTP clients,
+persistence beyond the model sidecar, a REST API — belongs in the consuming application
+(`solaredge2mqtt` today, `learninghouse` in the future), never in pvlearn itself. Never add a
+dependency on `fastapi`, `httpx`, or similar.
 
 ### Directory Structure
 
 ```
 pvlearn/
-├── pvlearn/            # core library — I/O-free, DataFrames in, forecasts out
-│   └── service/        # REST service (FastAPI), brain persistence, weather-provider adapters
-│                        #   only importable when the `service` extra is installed
+├── pvlearn/            # the library — I/O-free, DataFrames in, forecasts out
 tests/                   # unit and integration tests mirroring pvlearn/ structure
 scripts/                 # one-off maintenance and data-preparation scripts, not shipped
                          #   with the package and free to use dependencies pvlearn does not
@@ -60,7 +60,7 @@ numbers that settled it. The code links to the record rather than restating it.
 
 ```bash
 # Install with all development dependencies
-pip install -e ".[dev,service]"
+pip install -e ".[dev]"
 
 # Lint (must pass before commit)
 ruff check .
