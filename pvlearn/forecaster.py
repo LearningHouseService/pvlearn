@@ -17,9 +17,10 @@ from sklearn import clone
 from sklearn.base import BaseEstimator, TransformerMixin
 from sklearn.compose import ColumnTransformer
 from sklearn.ensemble import HistGradientBoostingRegressor
+from sklearn.experimental import enable_halving_search_cv  # noqa: F401
 from sklearn.inspection import permutation_importance
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
-from sklearn.model_selection import GridSearchCV, TimeSeriesSplit
+from sklearn.model_selection import HalvingGridSearchCV, TimeSeriesSplit
 from sklearn.pipeline import Pipeline
 
 from pvlearn.config import ForecasterConfig
@@ -279,11 +280,20 @@ class Forecaster:
             "model__learning_rate": [0.01, 0.1],
         }
 
-        grid_search = GridSearchCV(
+        # Successive halving instead of an exhaustive grid: weak candidates are
+        # eliminated on a small slice of the data before the expensive full-size
+        # fits, which on hourly data include PFISelector's own permutation
+        # importance per candidate. random_state fixes which rows each rung
+        # sees, so the search is reproducible like the rest of the pipeline.
+        grid_search = HalvingGridSearchCV(
             estimator=pipeline,
             param_grid=param_grid,
-            cv=TimeSeriesSplit(n_splits=2),
+            # HalvingGridSearchCV's own __init__ declares cv=5 with no type
+            # annotation, unlike GridSearchCV's cv=None; pyright infers "int"
+            # from that default even though a splitter is valid at runtime.
+            cv=TimeSeriesSplit(n_splits=2),  # pyright: ignore[reportArgumentType]
             scoring="neg_mean_squared_error",
+            random_state=42,
         )
         grid_search.fit(data, y_vector)
 

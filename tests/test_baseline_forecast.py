@@ -46,7 +46,7 @@ class TestBaselineArtifact:
         assert baseline_metadata["versions"]["scikit-learn"] == BASELINE_SKLEARN_VERSION
 
     def test_was_produced_without_hyperparameter_tuning(self, baseline_metadata: dict):
-        """GridSearchCV would pick different hyperparameters per run of the data."""
+        """The tuning search would pick different hyperparameters per data run."""
         assert baseline_metadata["hyperparameter_tuning"] is False
 
     def test_holdout_follows_the_training_data(

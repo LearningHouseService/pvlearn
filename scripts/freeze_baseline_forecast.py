@@ -133,8 +133,9 @@ def main() -> int:
     holdout_data = data.iloc[-holdout:]
 
     # enable=False keeps the cachingdir validator returning None, so the pipeline
-    # runs without joblib memoisation. Tuning stays off: GridSearchCV would change
-    # the selected hyperparameters and defeat the point of a stable baseline.
+    # runs without joblib memoisation. Tuning stays off: the hyperparameter search
+    # would change the selected hyperparameters and defeat the point of a stable
+    # baseline.
     settings = ForecastSettings(enable=False, hyperparametertuning=False)
     location = LocationSettings(
         latitude=metadata["location"]["latitude"],
