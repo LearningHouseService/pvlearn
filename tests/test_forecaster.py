@@ -307,7 +307,7 @@ class TestForecasterTrain:
         forecaster._cleanup_cache()  # must not raise
 
     def test_hyperparametertuning_returns_cloned_best_estimator(self):
-        """Exercises the real GridSearchCV path with a minimal pipeline.
+        """Exercises the real HalvingGridSearchCV path with a minimal pipeline.
 
         A full preprocessor would make this as expensive as real training;
         param_grid only touches the "model" step, so a bare estimator is enough.
