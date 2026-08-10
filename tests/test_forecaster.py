@@ -491,32 +491,17 @@ class TestForecasterPersistence:
         assert restored.metadata == first.metadata
         assert not list(tmp_path.glob("*.tmp"))
 
-    def test_load_rejects_an_outdated_feature_schema(self, tmp_path):
+    def test_load_rejects_a_model_from_an_older_release(self, tmp_path):
         forecaster = Forecaster(make_location(), make_config())
         forecaster.train(make_training_data())
         forecaster.save(tmp_path)
 
         metadata_path = tmp_path / METADATA_FILENAME
         metadata = json.loads(metadata_path.read_text())
-        metadata["feature_schema_version"] = 0
+        metadata["pvlearn_version"] = "0.0.1"
         metadata_path.write_text(json.dumps(metadata))
 
-        with pytest.raises(SchemaMismatchError, match="feature_schema_version"):
-            Forecaster.load(tmp_path, make_location(), make_config())
-
-    def test_load_rejects_a_model_from_an_older_pipeline(self, tmp_path):
-        """A sidecar written before `pipeline_version` existed reads as 1 and
-        has to be retrained, not loaded."""
-        forecaster = Forecaster(make_location(), make_config())
-        forecaster.train(make_training_data())
-        forecaster.save(tmp_path)
-
-        metadata_path = tmp_path / METADATA_FILENAME
-        metadata = json.loads(metadata_path.read_text())
-        del metadata["pipeline_version"]
-        metadata_path.write_text(json.dumps(metadata))
-
-        with pytest.raises(SchemaMismatchError, match="pipeline_version is 1"):
+        with pytest.raises(SchemaMismatchError, match="pvlearn_version"):
             Forecaster.load(tmp_path, make_location(), make_config())
 
 

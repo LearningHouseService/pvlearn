@@ -42,7 +42,7 @@ The weather feature schema, time/sun-position features, target variable, and mod
 invalidation rules are specified in `pvlearn/schema.py` and `pvlearn/metadata.py` — the code is
 the canonical spec, there is no separate document restating it. Do not invent field names or
 diverge from that schema — every trained model becomes invalid if it changes, so a change there
-is a deliberate, versioned decision (`feature_schema_version`), not a normal refactor.
+is a deliberate decision carried by the next release, not a normal refactor (ADR 0003).
 
 ### Decisions
 
@@ -109,10 +109,11 @@ the reasoning that survives into `main`'s history.
 - **Custom sklearn transformers** (encoders, selectors) must support `sklearn.clone()` and
   pickling — constructor arguments must be primitive and serializable, not settings objects.
 - **Model persistence:** joblib/pickle with a metadata sidecar, see `pvlearn/metadata.py`. Loading
-  a model whose `feature_schema_version`, `pipeline_version`, sklearn minor version, interval, or
-  location does not match current config means hard rejection and retraining — never a
-  best-effort load. The weather provider is not part of that check: it is a per-row categorical
-  feature in the training data now, not a training-run setting.
+  a model whose pvlearn release, interval, or location does not match current config means hard
+  rejection and retraining — never a best-effort load. The release is the only version compared,
+  and it covers schema, pipeline and dependency changes alike (ADR 0003). The weather provider is
+  not part of the check: it is a per-row categorical feature in the training data now, not a
+  training-run setting.
 
 ### Testing
 

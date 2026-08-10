@@ -4,6 +4,7 @@
 - **Date:** 2026-08-06
 - **Phase:** 1c (feature-selection correction)
 - **Supersedes the threshold decided in:** [ADR 0001](0001-feature-selection-threshold.md)
+- **Its `pipeline_version` mechanism is superseded by:** [ADR 0003](0003-one-version-decides-model-compatibility.md). The selection decision below stands.
 
 ## Context
 

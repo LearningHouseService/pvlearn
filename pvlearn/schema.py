@@ -5,11 +5,9 @@ the weather service returns onto the names below. All weather features are
 optional — a provider that has no UV index simply yields a smaller feature set,
 never an error.
 
-Changing anything here invalidates every persisted model, which is what
-`FEATURE_SCHEMA_VERSION` exists for. Bump it in the same commit as the change.
+Changing anything here invalidates every persisted model. The pvlearn release
+in the model metadata carries that — see ADR 0003.
 """
-
-FEATURE_SCHEMA_VERSION = 2
 
 #: Column holding the timezone-aware timestamp of an interval's start.
 TIME_FEATURE = "time"
