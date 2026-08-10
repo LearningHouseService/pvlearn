@@ -64,9 +64,8 @@ The selector now keeps 24 of 28 features and is therefore close to a no-op —
 the "no selection" row is statistically indistinguishable from it. Removing
 `PFISelector` entirely is the honest conclusion to draw from that, but it
 changes the pipeline shape, removes the `selected_features` field the model
-metadata in chapter 3.4 is specified to carry, and cannot be judged on one
-plant's data. It is recorded as an open point in chapter 6 of the Umsetzungsplan
-instead.
+metadata (`pvlearn/metadata.py`) is specified to carry, and cannot be judged on
+one plant's data. Left as an open question rather than implemented here.
 
 ## Alternatives considered
 
@@ -85,5 +84,5 @@ guard on the thing it exists to catch.
 **Better selectors** (noise-aware threshold via `importances_std`, Boruta-style
 shadow features, `SequentialFeatureSelector` with `TimeSeriesSplit`) are all
 plausible improvements over a plain `> 0` rule, and all are larger changes than
-Phase 1b's scope allows. They are listed in chapter 6 of the Umsetzungsplan,
-together with the chronological-split defect in `PFISelector.fit`.
+Phase 1b's scope allows. Left open, together with the chronological-split
+defect in `PFISelector.fit`.

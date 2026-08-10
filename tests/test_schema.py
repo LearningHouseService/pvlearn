@@ -34,7 +34,7 @@ ROWS = 60
 def make_forecaster() -> Forecaster:
     return Forecaster(
         Location(latitude=52.52, longitude=13.405, timezone=LOCAL_TZ),
-        ForecasterConfig(interval_minutes=60, weather_provider="test"),
+        ForecasterConfig(interval_minutes=60),
     )
 
 

@@ -63,7 +63,6 @@ def retrained(
 
     config = ForecasterConfig(
         interval_minutes=60,
-        weather_provider="openweathermap",
         hyperparametertuning=False,
     )
 

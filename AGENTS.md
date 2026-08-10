@@ -4,21 +4,18 @@ This file is the single source of truth for AI coding assistants (Claude Code, G
 Cursor, etc.). Tool-specific configurations in `.github/` reference this file and add only
 tool-specific syntax on top.
 
-The authoritative roadmap, architecture decisions, and canonical data model live in
-[`pvlearn-umsetzungsplan.md`](pvlearn-umsetzungsplan.md). Read it before starting any non-trivial
-task — it defines what phase the project is in and which changes are in scope.
+Architecture decisions live in `docs/adr/`, numbered and append-only. Read the code and the ADRs
+before starting any non-trivial task.
 
 ## Project Overview
 
 - **Purpose:** Self-learning PV production forecast library. Trains on a plant's own historical
   measurements instead of a generic physical plant model (orientation, tilt, kWp) — that is the
   differentiator against Forecast.Solar and Solcast. No REST service, add-on, or HA integration is
-  built here — `learninghouse` embeds pvlearn and builds those, on its own roadmap. See chapter 1
-  and chapter 4 of the Umsetzungsplan.
+  built here — `learninghouse` embeds pvlearn and builds those, on its own roadmap.
 - **Language:** Python (>=3.12, <4)
 - **Package Manager:** pip with `pyproject.toml`
-- **Origin:** extracted from the forecast module of `DerOetzi/solaredge2mqtt`. See the
-  Umsetzungsplan for the extraction phases and what stays behind in that repository.
+- **Origin:** extracted from the forecast module of `DerOetzi/solaredge2mqtt`.
 
 ### Architecture Principle — the library is I/O-free
 
@@ -37,16 +34,15 @@ tests/                   # unit and integration tests mirroring pvlearn/ structu
 scripts/                 # one-off maintenance and data-preparation scripts, not shipped
                          #   with the package and free to use dependencies pvlearn does not
 docs/adr/                # architecture decision records, numbered and append-only
-pvlearn-umsetzungsplan.md  # phased roadmap and architecture decisions — read first
 ```
 
 ### Canonical Data Model
 
 The weather feature schema, time/sun-position features, target variable, and model metadata /
-invalidation rules are specified in chapter 3 of the Umsetzungsplan; `pvlearn/schema.py` is its
-executable form. Do not invent field names or diverge from that schema — every trained model
-becomes invalid if it changes, so a change there is a deliberate, versioned decision
-(`feature_schema_version`), not a normal refactor.
+invalidation rules are specified in `pvlearn/schema.py` and `pvlearn/metadata.py` — the code is
+the canonical spec, there is no separate document restating it. Do not invent field names or
+diverge from that schema — every trained model becomes invalid if it changes, so a change there
+is a deliberate, versioned decision (`feature_schema_version`), not a normal refactor.
 
 ### Decisions
 
@@ -109,12 +105,14 @@ the reasoning that survives into `main`'s history.
 - **Multi-tenancy:** nothing may be process-global. Timezone, location, and weather provider are
   always explicit parameters on the relevant object (a "brain" in service terms), never read from
   a module-level default or the local system. This was a real bug class in the codebase pvlearn
-  was extracted from — see chapter 5 (Testing) and chapter 7 (Risks) of the Umsetzungsplan.
+  was extracted from.
 - **Custom sklearn transformers** (encoders, selectors) must support `sklearn.clone()` and
   pickling — constructor arguments must be primitive and serializable, not settings objects.
-- **Model persistence:** joblib/pickle with a metadata sidecar per chapter 3.4. Loading a model
-  whose `feature_schema_version`, sklearn minor version, weather provider, or location does not
-  match current config means hard rejection and retraining — never a best-effort load.
+- **Model persistence:** joblib/pickle with a metadata sidecar, see `pvlearn/metadata.py`. Loading
+  a model whose `feature_schema_version`, `pipeline_version`, sklearn minor version, interval, or
+  location does not match current config means hard rejection and retraining — never a
+  best-effort load. The weather provider is not part of that check: it is a per-row categorical
+  feature in the training data now, not a training-run setting.
 
 ### Testing
 
