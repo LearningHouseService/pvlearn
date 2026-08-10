@@ -10,7 +10,7 @@
 ADR 0001 replaced `PFISelector`'s inherited 75th-percentile cut with an absolute
 `importance > 0`, because a quantile ties a feature's fate to how many columns
 the weather provider happens to deliver. It closed with three known follow-ups,
-all recorded as open points in chapter 6 of the Umsetzungsplan:
+left as open points:
 
 - **A defect, not a preference.** `PFISelector.fit` split with
   `train_test_split(..., test_size=0.1, random_state=42)`, which shuffles by
@@ -121,9 +121,9 @@ number means. `k = 1` makes the weaker and better-supported claim.
 
 **Deferring `k` until data from several plants exists.** Honest about the
 evidence, and it remains the right frame for the larger question of whether the
-selector should exist at all (chapter 6, point 7 of the Umsetzungsplan). Not
-chosen here because it would leave the known-flattered importances in place for
-another release cycle.
+selector should exist at all — still open (see ADR 0001). Not chosen here
+because it would leave the known-flattered importances in place for another
+release cycle.
 
 **Grouping cyclical pairs by asking the encoders.** Structurally cleaner than
 matching on a `_sin`/`_cos` suffix, but the selector is a pipeline step that

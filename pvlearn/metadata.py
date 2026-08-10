@@ -42,8 +42,11 @@ class ModelMetadata(BaseModel):
 
     Loading a model whose metadata disagrees with the current configuration is
     a hard error, never a best-effort load: a model trained on a different
-    feature set, provider, interval, or location keeps predicting plausible
-    numbers, so the failure is silent and effectively undebuggable.
+    feature set, interval, or location keeps predicting plausible numbers, so
+    the failure is silent and effectively undebuggable. The weather provider
+    is deliberately not part of this: it is the `weather_provider` categorical
+    feature in `pvlearn.schema` now, a per-row fact the model can learn from
+    rather than a setting the whole model is pinned to.
     """
 
     pvlearn_version: str
@@ -53,7 +56,6 @@ class ModelMetadata(BaseModel):
     #: rather than as unreadable metadata.
     pipeline_version: int = 1
     sklearn_version: str
-    weather_provider: str
     interval_minutes: int
     location: Location
     trained_at: datetime
@@ -76,7 +78,6 @@ class ModelMetadata(BaseModel):
             feature_schema_version=FEATURE_SCHEMA_VERSION,
             pipeline_version=PIPELINE_VERSION,
             sklearn_version=sklearn_minor_version(),
-            weather_provider=config.weather_provider,
             interval_minutes=config.interval_minutes,
             location=location,
             trained_at=trained_at or datetime.now().astimezone(),
@@ -96,7 +97,6 @@ class ModelMetadata(BaseModel):
             self._compare("feature_schema_version", FEATURE_SCHEMA_VERSION),
             self._compare("pipeline_version", PIPELINE_VERSION),
             self._compare("sklearn_version", sklearn_minor_version()),
-            self._compare("weather_provider", config.weather_provider),
             self._compare("interval_minutes", config.interval_minutes),
             self._compare("location", location),
         ]

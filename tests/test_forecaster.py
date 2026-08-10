@@ -42,9 +42,7 @@ def make_location(latitude: float = 52.52, longitude: float = 13.405) -> Locatio
 
 
 def make_config(**overrides) -> ForecasterConfig:
-    return ForecasterConfig(
-        **{"interval_minutes": 60, "weather_provider": "openweathermap", **overrides}
-    )
+    return ForecasterConfig(**{"interval_minutes": 60, **overrides})
 
 
 def make_training_data(rows: int = 100, weather: bool = True) -> DataFrame:
@@ -164,7 +162,6 @@ class TestForecasterTrain:
 
         assert forecaster.metadata is not None
         assert forecaster.metadata.training_rows == len(data)
-        assert forecaster.metadata.weather_provider == "openweathermap"
         assert forecaster.metadata.interval_minutes == 60
         assert forecaster.metadata.location == forecaster.location
         assert forecaster.metadata.selected_features
@@ -446,18 +443,6 @@ class TestForecasterPersistence:
 
         with pytest.raises(SchemaMismatchError, match="location"):
             Forecaster.load(tmp_path, make_location(latitude=48.1), make_config())
-
-    def test_load_rejects_a_model_trained_on_another_provider(self, tmp_path):
-        forecaster = Forecaster(make_location(), make_config())
-        forecaster.train(make_training_data())
-        forecaster.save(tmp_path)
-
-        with pytest.raises(SchemaMismatchError, match="weather_provider"):
-            Forecaster.load(
-                tmp_path,
-                make_location(),
-                make_config(weather_provider="open-meteo"),
-            )
 
     def test_load_rejects_unreadable_metadata_as_a_mismatch(self, tmp_path):
         """A caller catching the documented errors to retrain must not crash on

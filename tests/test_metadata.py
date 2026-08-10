@@ -28,9 +28,7 @@ def make_location(**overrides) -> Location:
 
 
 def make_config(**overrides) -> ForecasterConfig:
-    return ForecasterConfig(
-        **{"interval_minutes": 60, "weather_provider": "open-meteo", **overrides}
-    )
+    return ForecasterConfig(**{"interval_minutes": 60, **overrides})
 
 
 def make_metadata(**overrides) -> ModelMetadata:
@@ -62,7 +60,6 @@ class TestCreate:
         assert metadata.feature_schema_version == FEATURE_SCHEMA_VERSION
         assert metadata.pipeline_version == PIPELINE_VERSION
         assert metadata.sklearn_version == sklearn_minor_version()
-        assert metadata.weather_provider == "open-meteo"
         assert metadata.interval_minutes == 60
         assert metadata.training_rows == 1440
 
@@ -106,12 +103,6 @@ class TestRaiseOnMismatch:
         with pytest.raises(SchemaMismatchError, match="sklearn_version"):
             metadata.raise_on_mismatch(make_location(), make_config())
 
-    def test_rejects_a_different_provider(self):
-        with pytest.raises(SchemaMismatchError, match="weather_provider"):
-            make_metadata().raise_on_mismatch(
-                make_location(), make_config(weather_provider="openweathermap")
-            )
-
     def test_rejects_a_different_interval(self):
         metadata = make_metadata(interval_minutes=15)
 
@@ -135,14 +126,11 @@ class TestRaiseOnMismatch:
         metadata = make_metadata(interval_minutes=15, sklearn_version="0.1")
 
         with pytest.raises(SchemaMismatchError) as error:
-            metadata.raise_on_mismatch(
-                make_location(), make_config(weather_provider="openweathermap")
-            )
+            metadata.raise_on_mismatch(make_location(), make_config())
 
         message = str(error.value)
         assert "interval_minutes" in message
         assert "sklearn_version" in message
-        assert "weather_provider" in message
 
     def test_ignores_the_pvlearn_version(self):
         """Not every release changes how features are built."""

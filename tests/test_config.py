@@ -5,9 +5,7 @@ from pvlearn.config import ForecasterConfig
 
 
 def make_config(**overrides) -> ForecasterConfig:
-    return ForecasterConfig(
-        **{"interval_minutes": 60, "weather_provider": "openweathermap", **overrides}
-    )
+    return ForecasterConfig(**{"interval_minutes": 60, **overrides})
 
 
 def test_forecaster_config_defaults():
@@ -30,17 +28,7 @@ def test_forecaster_config_rejects_non_positive_cache_limit():
         make_config(cache_size_limit_mb=0)
 
 
-def test_forecaster_config_requires_interval_and_provider():
-    with pytest.raises(ValidationError):
-        ForecasterConfig()  # type: ignore[call-arg]
-
-
 def test_forecaster_config_rejects_unsupported_interval():
     """Finer intervals need measurement data that does not exist yet (3.5)."""
     with pytest.raises(ValidationError, match="Unsupported forecast interval"):
         make_config(interval_minutes=15)
-
-
-def test_forecaster_config_rejects_empty_provider():
-    with pytest.raises(ValidationError):
-        make_config(weather_provider="")

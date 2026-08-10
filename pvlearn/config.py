@@ -14,13 +14,14 @@ class ForecasterConfig(BaseModel):
     accepted as-is and never defaulted or prepared here, since the library does
     not touch the filesystem except through paths it is explicitly given.
 
-    `interval_minutes` and `weather_provider` have no defaults: both end up in
-    the model metadata and a wrong guess for either produces a model that is
-    silently trained on inputs it will never see again.
+    There is no `weather_provider` field: which provider a row came from is a
+    per-row fact of the training data, not a training-run setting, and lives
+    as the `weather_provider` categorical feature in `pvlearn.schema` instead.
+    `interval_minutes` defaults to 60, the only interval
+    `SUPPORTED_INTERVAL_MINUTES` currently allows.
     """
 
-    interval_minutes: int
-    weather_provider: str = Field(min_length=1)
+    interval_minutes: int = Field(default=60)
     hyperparametertuning: bool = Field(default=False)
     cachingdir: str | None = Field(default=None)
     cache_size_limit_mb: int = Field(default=512, ge=1)
