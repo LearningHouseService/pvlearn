@@ -142,8 +142,12 @@ class TestSerialization:
         assert restored == metadata
 
     def test_a_sidecar_from_before_adr_0003_is_a_mismatch_not_unreadable(self):
-        """The dropped version fields must degrade into a precise reason."""
-        sidecar = make_metadata(pvlearn_version="0.3.0").model_dump(mode="json")
+        """The dropped version fields must degrade into a precise reason.
+
+        `0.0.1` is below every published release, so this stays a mismatch
+        whatever version the test run itself was built from.
+        """
+        sidecar = make_metadata(pvlearn_version="0.0.1").model_dump(mode="json")
         sidecar |= {
             "feature_schema_version": 2,
             "pipeline_version": 2,
@@ -152,5 +156,5 @@ class TestSerialization:
 
         restored = ModelMetadata.model_validate(sidecar)
 
-        with pytest.raises(SchemaMismatchError, match="pvlearn_version is '0.3.0'"):
+        with pytest.raises(SchemaMismatchError, match="pvlearn_version is '0.0.1'"):
             restored.raise_on_mismatch(make_location(), make_config())
