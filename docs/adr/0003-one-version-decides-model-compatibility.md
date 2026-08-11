@@ -36,6 +36,19 @@ install identical numpy, pandas, scipy and scikit-learn. No script in the
 repository reproduces the check. It rests on a single manual run recorded only
 as prose, and cannot fail if it stops being true.
 
+Its counterpart from the same commit — that the frozen Phase 0 baseline "is
+only reproducible against 1.9.0", which is what made scikit-learn's pin
+load-bearing — fails harder. `test_records_the_versions_it_depends_on` looks
+like it guards the claim but asserts only that the frozen sidecar records
+`1.9.0`; it would pass unchanged if a newer scikit-learn reproduced the
+baseline perfectly. And the claim is contradicted by a measurement the project
+did make, recorded in `tests/test_extraction_regression.py`: the baseline does
+not reproduce bit-for-bit across CPUs even with every version held fixed, CI
+landing 5.26% off the MAE with `random_state=42` pinned throughout. The
+variable that was actually measured to break reproduction is the machine, not
+scikit-learn. Both comments now state only what is measured; the pins stay, as
+a precaution rather than a finding.
+
 ## Decision
 
 Compare one version: the release segment of `pvlearn_version`.

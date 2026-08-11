@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
 """Freeze baseline forecasts from the current solaredge2mqtt production code.
 
-Phase 0 of the roadmap needs the forecasts the existing implementation produces on
-the reference dataset, recorded before any code is moved. Phase 1a is accepted only
-if the extracted pvlearn code reproduces them, so this artifact is what makes the
-extraction verifiable at all.
+These are the forecasts the existing implementation produced on the reference
+dataset, recorded before any code was moved. The extraction was accepted only
+once pvlearn reproduced them, so this artifact is what made it verifiable at all.
 
 The script trains solaredge2mqtt's own `Forecaster` on the dataset minus a holdout
 tail, predicts that tail, and writes the predictions plus metrics and the exact
