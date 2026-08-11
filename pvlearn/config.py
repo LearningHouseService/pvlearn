@@ -2,7 +2,7 @@ from pydantic import BaseModel, Field, field_validator
 
 #: Interval lengths the library trains and predicts on today. The field exists
 #: so no code path silently assumes an hour; finer resolutions need measurement
-#: data and a provider that delivers them natively (chapter 3.5).
+#: data and a provider that delivers them natively.
 SUPPORTED_INTERVAL_MINUTES: tuple[int, ...] = (60,)
 
 

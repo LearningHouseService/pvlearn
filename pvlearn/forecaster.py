@@ -59,8 +59,7 @@ class Forecaster:
 
     There is exactly one model. The former power model trained on identical
     features and, at hourly resolution, produced the same number in a different
-    unit — on the reference dataset the two were less than a percent apart
-    (chapter 3.3 of the Umsetzungsplan).
+    unit — on the reference dataset the two were less than a percent apart.
     """
 
     #: Splits used to carve a holdout out of the training data for the metrics

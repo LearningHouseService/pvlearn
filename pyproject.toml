@@ -25,11 +25,14 @@ classifiers = [
 # they shape how the wheel is built, not how the installed package behaves, and
 # pinning them breaks builds on newer setuptools for no reproducibility gain.
 #
-# scikit-learn is load-bearing rather than merely tidy: the frozen Phase 0
-# baseline is only reproducible against 1.9.0, so a scikit-learn bump must
-# regenerate the baseline and say so in its changelog. Whether the other pins
-# are equally load-bearing is untested — nothing in CI varies a dependency
-# version, so treat any bump as capable of moving the baseline until measured.
+# Which of these pins actually moves a forecast is not known: nothing in CI
+# varies a dependency version, and the pins themselves make it unmeasurable.
+# What is measured is narrower — the frozen baseline does not reproduce
+# bit-for-bit across CPUs even with every version held fixed, so
+# tests/test_extraction_regression.py compares quality within a tolerance
+# rather than the raw numbers. That test is the only guard a bump has to pass;
+# treat any bump as capable of moving the baseline until it is measured
+# otherwise.
 #
 # numpy 2.5 and scipy 1.18 require Python 3.12, which is why 3.11 is not
 # supported.

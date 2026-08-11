@@ -21,9 +21,10 @@ EXPECTED_COLUMNS = {
     "power_published",
 }
 
-# The baseline is only reproducible against the scikit-learn version that produced
-# it; a different one silently shifts every prediction. Chapter 3.4 makes this part
-# of the persisted model metadata for the same reason.
+# The version the frozen artifact was produced under. Pinning it here keeps the
+# artifact and the pin in pyproject.toml from drifting apart unnoticed; it says
+# nothing about whether another version would reproduce the baseline, which has
+# never been measured.
 BASELINE_SKLEARN_VERSION = "1.9.0"
 
 WH_PER_KWH = 1000
@@ -98,7 +99,7 @@ class TestBaselineQuality:
     def test_energy_and_power_metrics_agree(self, baseline_metadata: dict):
         """At hourly resolution mean power in W equals energy in Wh.
 
-        Chapter 3.3 drops the power model on exactly this basis, so the two MAEs
+        The power model was dropped on exactly this basis, so the two MAEs
         should stay within a few percent of one another.
         """
         energy_mae = baseline_metadata["metrics"]["energy"]["mae"]
