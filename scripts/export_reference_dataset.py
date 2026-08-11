@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Export a reference training dataset from a solaredge2mqtt InfluxDB instance.
 
-Phase 0 of the roadmap needs a frozen dataset that the extraction work in Phase 1a
-can be verified against. This script pulls the `forecast_training` measurement,
+The extraction is verified against a frozen dataset rather than live data. This
+script produces that dataset: it pulls the `forecast_training` measurement,
 pivots it into the same wide shape that `Forecaster.train()` consumes, and writes
 it as Parquet next to a JSON sidecar describing the export.
 
@@ -78,7 +78,7 @@ def parse_args() -> argparse.Namespace:
 
 def query_training_data(args: argparse.Namespace, token: str):
     # influxdb-client is deliberately not a project dependency: pvlearn itself must stay
-    # free of I/O clients. This one-off Phase 0 script asks you to install it ad hoc.
+    # free of I/O clients. This one-off script asks you to install it ad hoc.
     from influxdb_client import (  # pyright: ignore[reportMissingImports]
         InfluxDBClient,
     )

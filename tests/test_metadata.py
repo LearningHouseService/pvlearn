@@ -1,19 +1,12 @@
 from datetime import datetime
 
 import pytest
-import sklearn
 
 from pvlearn import __version__
 from pvlearn.config import ForecasterConfig
 from pvlearn.exceptions import SchemaMismatchError
 from pvlearn.location import Location
-from pvlearn.metadata import (
-    PIPELINE_VERSION,
-    ModelMetadata,
-    ModelMetrics,
-    sklearn_minor_version,
-)
-from pvlearn.schema import FEATURE_SCHEMA_VERSION
+from pvlearn.metadata import ModelMetadata, ModelMetrics, release_version
 
 
 def make_location(**overrides) -> Location:
@@ -46,10 +39,24 @@ def make_metadata(**overrides) -> ModelMetadata:
     return metadata.model_copy(update=overrides)
 
 
-def test_sklearn_minor_version_drops_the_patch_level():
-    major, minor = sklearn.__version__.split(".")[:2]
+@pytest.mark.parametrize(
+    ("version", "expected"),
+    [
+        ("0.3.0", "0.3.0"),
+        ("0.3.0.post3+g527ccef", "0.3.0"),
+        ("0.3.0.post3.dev1+g527ccef.d20260810", "0.3.0"),
+        ("1.0.0rc1", "1.0.0"),
+        ("1.0.0.dev0", "1.0.0"),
+        ("2", "2"),
+    ],
+)
+def test_release_version_keeps_only_the_release_segment(version: str, expected: str):
+    assert release_version(version) == expected
 
-    assert sklearn_minor_version() == f"{major}.{minor}"
+
+def test_release_version_rejects_a_version_without_a_release_segment():
+    with pytest.raises(ValueError, match="does not start with a release segment"):
+        release_version("unknown")
 
 
 class TestCreate:
@@ -57,9 +64,6 @@ class TestCreate:
         metadata = make_metadata()
 
         assert metadata.pvlearn_version == __version__
-        assert metadata.feature_schema_version == FEATURE_SCHEMA_VERSION
-        assert metadata.pipeline_version == PIPELINE_VERSION
-        assert metadata.sklearn_version == sklearn_minor_version()
         assert metadata.interval_minutes == 60
         assert metadata.training_rows == 1440
 
@@ -85,23 +89,19 @@ class TestRaiseOnMismatch:
     def test_accepts_the_setup_it_was_created_from(self):
         make_metadata().raise_on_mismatch(make_location(), make_config())
 
-    def test_rejects_a_different_feature_schema(self):
-        metadata = make_metadata(feature_schema_version=FEATURE_SCHEMA_VERSION + 1)
+    def test_rejects_a_model_from_another_release(self):
+        metadata = make_metadata(pvlearn_version="0.0.1")
 
-        with pytest.raises(SchemaMismatchError, match="feature_schema_version"):
+        with pytest.raises(SchemaMismatchError, match="pvlearn_version"):
             metadata.raise_on_mismatch(make_location(), make_config())
 
-    def test_rejects_a_different_pipeline_version(self):
-        metadata = make_metadata(pipeline_version=PIPELINE_VERSION - 1)
+    def test_accepts_a_dev_build_of_the_same_release(self):
+        """Commits between two releases must not invalidate a model."""
+        metadata = make_metadata(
+            pvlearn_version=f"{release_version()}.post3.dev1+g527ccef"
+        )
 
-        with pytest.raises(SchemaMismatchError, match="pipeline_version"):
-            metadata.raise_on_mismatch(make_location(), make_config())
-
-    def test_rejects_a_different_sklearn_minor_version(self):
-        metadata = make_metadata(sklearn_version="0.1")
-
-        with pytest.raises(SchemaMismatchError, match="sklearn_version"):
-            metadata.raise_on_mismatch(make_location(), make_config())
+        metadata.raise_on_mismatch(make_location(), make_config())
 
     def test_rejects_a_different_interval(self):
         metadata = make_metadata(interval_minutes=15)
@@ -123,20 +123,14 @@ class TestRaiseOnMismatch:
             )
 
     def test_reports_every_mismatch_at_once(self):
-        metadata = make_metadata(interval_minutes=15, sklearn_version="0.1")
+        metadata = make_metadata(interval_minutes=15, pvlearn_version="0.0.1")
 
         with pytest.raises(SchemaMismatchError) as error:
             metadata.raise_on_mismatch(make_location(), make_config())
 
         message = str(error.value)
         assert "interval_minutes" in message
-        assert "sklearn_version" in message
-
-    def test_ignores_the_pvlearn_version(self):
-        """Not every release changes how features are built."""
-        metadata = make_metadata(pvlearn_version="0.0.1")
-
-        metadata.raise_on_mismatch(make_location(), make_config())
+        assert "pvlearn_version" in message
 
 
 class TestSerialization:
@@ -146,3 +140,21 @@ class TestSerialization:
         restored = ModelMetadata.model_validate_json(metadata.model_dump_json())
 
         assert restored == metadata
+
+    def test_a_sidecar_from_before_adr_0003_is_a_mismatch_not_unreadable(self):
+        """The dropped version fields must degrade into a precise reason.
+
+        `0.0.1` is below every published release, so this stays a mismatch
+        whatever version the test run itself was built from.
+        """
+        sidecar = make_metadata(pvlearn_version="0.0.1").model_dump(mode="json")
+        sidecar |= {
+            "feature_schema_version": 2,
+            "pipeline_version": 2,
+            "sklearn_version": "1.9",
+        }
+
+        restored = ModelMetadata.model_validate(sidecar)
+
+        with pytest.raises(SchemaMismatchError, match="pvlearn_version is '0.0.1'"):
+            restored.raise_on_mismatch(make_location(), make_config())

@@ -92,7 +92,7 @@ class TestHourlyAggregates:
 
 class TestIntervalIndependence:
     def test_hourly_figures_sum_sub_hour_intervals(self):
-        """Nothing assumes one row equals one hour (chapter 3.5)."""
+        """Nothing assumes one row equals one hour."""
         start = datetime(2024, 6, 15, 0, 0, tzinfo=BERLIN)
         result = make_result(start, 96, interval_minutes=15, wh_per_period=25)
 

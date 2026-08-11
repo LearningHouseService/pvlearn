@@ -1,32 +1,30 @@
+import re
+from collections.abc import Callable
 from datetime import datetime
+from typing import Any
 
-import sklearn
 from pydantic import BaseModel
 
 from pvlearn import __version__
 from pvlearn.config import ForecasterConfig
 from pvlearn.exceptions import SchemaMismatchError
 from pvlearn.location import Location
-from pvlearn.schema import FEATURE_SCHEMA_VERSION
 
-#: Version of how the training pipeline is built — preprocessing steps, the
-#: feature-selection rule and the estimator. Distinct from
-#: `FEATURE_SCHEMA_VERSION`, which versions the feature vocabulary in
-#: `pvlearn.schema`: the same columns can be assembled into a different model.
-#: Bump it in the same commit as any change to `Forecaster._prepare_model_pipeline`
-#: or to `PFISelector`.
-PIPELINE_VERSION = 2
+#: Leading release segment of a PEP 440 version — `0.3.0` out of
+#: `0.3.0.post3.dev1+g527ccef`.
+_RELEASE_SEGMENT = re.compile(r"^\d+(?:\.\d+)*")
 
 
-def sklearn_minor_version() -> str:
-    """The `major.minor` part of the installed scikit-learn version.
+def release_version(version: str = __version__) -> str:
+    """The release part of a version, without pre/post/dev/local segments.
 
-    Patch releases do not change model behaviour, minor ones can — and a model
-    unpickled across a minor bump either warns or predicts differently, both of
-    which are worse than retraining.
+    See ADR 0003 for why the release alone decides model compatibility.
     """
-    major, minor = sklearn.__version__.split(".")[:2]
-    return f"{major}.{minor}"
+    match = _RELEASE_SEGMENT.match(version)
+    if match is None:
+        raise ValueError(f"Version {version!r} does not start with a release segment")
+
+    return match.group()
 
 
 class ModelMetrics(BaseModel):
@@ -47,15 +45,11 @@ class ModelMetadata(BaseModel):
     is deliberately not part of this: it is the `weather_provider` categorical
     feature in `pvlearn.schema` now, a per-row fact the model can learn from
     rather than a setting the whole model is pinned to.
+
+    The pvlearn release is the single version this compares — see ADR 0003.
     """
 
     pvlearn_version: str
-    feature_schema_version: int
-    #: Defaulted so that sidecars written before this field existed are read as
-    #: version 1 — which is what they are — and rejected with a precise reason
-    #: rather than as unreadable metadata.
-    pipeline_version: int = 1
-    sklearn_version: str
     interval_minutes: int
     location: Location
     trained_at: datetime
@@ -75,9 +69,6 @@ class ModelMetadata(BaseModel):
     ) -> "ModelMetadata":
         return cls(
             pvlearn_version=__version__,
-            feature_schema_version=FEATURE_SCHEMA_VERSION,
-            pipeline_version=PIPELINE_VERSION,
-            sklearn_version=sklearn_minor_version(),
             interval_minutes=config.interval_minutes,
             location=location,
             trained_at=trained_at or datetime.now().astimezone(),
@@ -89,14 +80,13 @@ class ModelMetadata(BaseModel):
     def raise_on_mismatch(self, location: Location, config: ForecasterConfig) -> None:
         """Reject the model unless it was trained under the given setup.
 
-        `pvlearn_version` deliberately does not take part: not every release
-        changes how features are built, and the parts that do are covered by
-        `feature_schema_version` and `pipeline_version`.
+        Only the release segment of `pvlearn_version` takes part, so a model
+        survives the dev builds between two releases — see ADR 0003.
         """
         mismatches = [
-            self._compare("feature_schema_version", FEATURE_SCHEMA_VERSION),
-            self._compare("pipeline_version", PIPELINE_VERSION),
-            self._compare("sklearn_version", sklearn_minor_version()),
+            self._compare(
+                "pvlearn_version", release_version(), transform=release_version
+            ),
             self._compare("interval_minutes", config.interval_minutes),
             self._compare("location", location),
         ]
@@ -108,9 +98,14 @@ class ModelMetadata(BaseModel):
                 f"and has to be retrained: {'; '.join(reasons)}"
             )
 
-    def _compare(self, attribute: str, expected: object) -> str | None:
+    def _compare(
+        self,
+        attribute: str,
+        expected: object,
+        transform: Callable[[Any], Any] = lambda value: value,
+    ) -> str | None:
         persisted = getattr(self, attribute)
-        if persisted == expected:
+        if transform(persisted) == expected:
             return None
 
         return f"{attribute} is {persisted!r}, expected {expected!r}"

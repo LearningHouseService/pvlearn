@@ -52,8 +52,8 @@ class ForecastResult(BaseModel):
     next hour is the one that actually follows.
 
     `interval_minutes` does not drive any of that — the timestamps do. It is
-    carried because the interval belongs in the forecast response (chapter 3.5)
-    and a consumer should not have to infer it from key spacing.
+    carried because the interval belongs in the forecast response and a
+    consumer should not have to infer it from key spacing.
     """
 
     interval_minutes: int

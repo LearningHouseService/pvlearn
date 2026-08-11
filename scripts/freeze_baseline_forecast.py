@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
 """Freeze baseline forecasts from the current solaredge2mqtt production code.
 
-Phase 0 of the roadmap needs the forecasts the existing implementation produces on
-the reference dataset, recorded before any code is moved. Phase 1a is accepted only
-if the extracted pvlearn code reproduces them, so this artifact is what makes the
-extraction verifiable at all.
+These are the forecasts the existing implementation produced on the reference
+dataset, recorded before any code was moved. The extraction was accepted only
+once pvlearn reproduced them, so this artifact is what made it verifiable at all.
 
 The script trains solaredge2mqtt's own `Forecaster` on the dataset minus a holdout
 tail, predicts that tail, and writes the predictions plus metrics and the exact
@@ -21,11 +20,13 @@ clients through `core.settings`, so the whole package has to be installed:
         --solaredge2mqtt /path/to/solaredge2mqtt \\
         --out tests/fixtures/baseline_forecast
 
-Determinism: training is reproducible because `HistGradientBoostingRegressor`,
-`train_test_split` and `permutation_importance` all pin `random_state=42`. It is
-*not* reproducible across scikit-learn versions, which is why the versions are
-recorded alongside the predictions and why chapter 3.4 makes them part of the
-model metadata.
+Determinism: training pins `random_state=42` in
+`HistGradientBoostingRegressor`, `train_test_split` and
+`permutation_importance`, which makes a rerun on the same machine and the same
+versions reproducible. It does not survive a different CPU — see
+`tests/test_extraction_regression.py`. Whether a different scikit-learn also
+breaks it has never been measured; the versions are recorded alongside the
+predictions so that a future divergence can at least be attributed.
 """
 
 from __future__ import annotations
@@ -76,8 +77,9 @@ def assert_process_timezone_matches(dataset_timezone: str) -> None:
     solaredge2mqtt reads the timezone once at import time
     (`encoders.py`: `LOCAL_TZ = get_localzone_name()`) and SunEncoder builds its
     location from it. Baselines frozen under a different process timezone are
-    silently not comparable. Removing this global is chapter 3.2 of the roadmap;
-    until then it has to be asserted.
+    silently not comparable. pvlearn itself has no such global — `SunEncoder`
+    takes the timezone as a parameter — but the frozen baseline predates that,
+    so until it is regenerated this has to be asserted.
     """
     from tzlocal import get_localzone_name  # pyright: ignore[reportMissingImports]
 

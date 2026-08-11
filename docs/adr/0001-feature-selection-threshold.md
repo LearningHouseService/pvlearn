@@ -50,11 +50,12 @@ cannot be fitted at all.
 ## Consequences
 
 The rule no longer depends on how many candidates exist. This matters beyond
-the numbers above: Phase 2 makes Open-Meteo the default provider, which adds
-`ghi`, `dni` and `dhi`. Under a quantile rule those three would shift the cut
-for every existing feature, so the same plant would select differently per
-provider — directly against the point of the canonical, provider-independent
-schema in chapter 3.1.
+the numbers above: a provider that delivers irradiance — `ghi`, `dni`, `dhi` —
+adds three candidates that a quantile rule would let shift the cut for every
+existing feature, so the same plant would select differently per provider.
+That runs against what the canonical schema in `pvlearn/schema.py` is for:
+provider-specific field names never reach the library, and a provider that
+delivers less yields a smaller feature set rather than a different model.
 
 Forecast quality lands at 641.54 Wh MAE, 3.3% above the baseline instead of
 7.67%, with R² (0.8831) close to the baseline's 0.8859. The remaining gap is a

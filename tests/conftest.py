@@ -11,7 +11,7 @@ REFERENCE_METADATA = FIXTURES_DIR / "reference_dataset.json"
 BASELINE_FORECAST = FIXTURES_DIR / "baseline_forecast.parquet"
 BASELINE_METADATA = FIXTURES_DIR / "baseline_forecast.json"
 
-#: OpenWeatherMap One Call field names to the canonical schema of chapter 3.1.
+#: OpenWeatherMap One Call field names to the canonical schema in `pvlearn.schema`.
 #: The real adapter lives in the consuming application (solaredge2mqtt today,
 #: learninghouse in the future); this one only exists to feed the frozen
 #: reference export, which was recorded before the schema was canonical, to the

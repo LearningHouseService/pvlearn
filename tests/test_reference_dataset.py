@@ -1,7 +1,7 @@
 """Guards on the frozen reference dataset.
 
-Every phase of the roadmap is verified by reproducing forecasts from this dataset,
-so it has to stay exactly what it is. These tests do not check pvlearn behaviour;
+Model changes are verified by reproducing forecasts from this dataset, so it has
+to stay exactly what it is. These tests do not check pvlearn behaviour;
 they fail loudly if the fixture is ever silently replaced with a different export
 that no longer covers the cases later tests depend on.
 """

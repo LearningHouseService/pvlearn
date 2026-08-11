@@ -1,9 +1,8 @@
 """Phase 1b's acceptance test: the consolidated model against the baseline.
 
-The Umsetzungsplan requires that forecast quality on the reference dataset is
-not worse than the frozen baseline, which was produced by solaredge2mqtt's
-original two-model code. What is compared is predictive quality, not the raw
-numbers.
+Forecast quality on the reference dataset must not be worse than the frozen
+baseline, which was produced by solaredge2mqtt's original two-model code. What
+is compared is predictive quality, not the raw numbers.
 
 Bit-for-bit comparison was tried in Phase 1a and does not hold up: predictions
 reproduce exactly on the machine that trains them, but diverge across different

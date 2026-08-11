@@ -42,13 +42,34 @@ The weather feature schema, time/sun-position features, target variable, and mod
 invalidation rules are specified in `pvlearn/schema.py` and `pvlearn/metadata.py` — the code is
 the canonical spec, there is no separate document restating it. Do not invent field names or
 diverge from that schema — every trained model becomes invalid if it changes, so a change there
-is a deliberate, versioned decision (`feature_schema_version`), not a normal refactor.
+is a deliberate decision carried by the next release, not a normal refactor (ADR 0003).
 
 ### Decisions
 
 A decision that needed weighing — and especially one whose reasoning would otherwise turn into a
 comment in the code — goes into `docs/adr/` as a numbered record, with the alternatives and the
 numbers that settled it. The code links to the record rather than restating it.
+
+**Never cite an implementation plan, roadmap, or phase document** — not in an ADR, not in a code
+comment, not in a docstring. No "chapter 3.4", no "point 7 of the roadmap", no "the Umsetzungsplan
+requires". Such documents are written for one migration and then deleted, and every reference to
+one rots into a pointer at nothing: `pvlearn-umsetzungsplan.md` was removed once its extraction
+phase was done and left nine dangling citations behind, one of them requiring a metadata field
+that had since been deleted.
+
+An ADR must stand alone. When a plan carries reasoning the record needs, **copy the relevant
+passage or summarise it into the ADR itself** rather than pointing at it. For anything that lives
+in the code — a schema, a threshold, a metadata field — cite the module or symbol
+(`pvlearn/schema.py`, `ModelMetadata.raise_on_mismatch`), which moves with the code and breaks
+loudly when it stops existing.
+
+Naming a past phase as the *provenance of a measurement* — "bit-for-bit comparison was tried in
+Phase 1a and does not hold up" — is fine and stays: it dates a result rather than sending the
+reader to a document. The line is whether removing the document would leave the sentence broken.
+
+The same applies to claims: an ADR or comment states what was measured and what backs it. Prose
+asserting an empirical result that no test, script, or CI job reproduces is worse than no claim at
+all, because it reads as evidence — see ADR 0003 for two that had to be withdrawn.
 
 ---
 
@@ -79,10 +100,10 @@ This repository enforces the Developer Certificate of Origin. Every commit needs
 To repair a branch where it is missing: `git rebase <base> --signoff` followed by
 `git push --force-with-lease`.
 
-**One pull request per phase or sub-phase of the roadmap, not per commit.** A phase lands as
-a single branch with however many commits it takes, reviewed and merged as one unit. Phase 0
-was built the other way round — a pull request per step — which produced eight of them for
-what is really one deliverable and made the phase impossible to review as a whole.
+**One pull request per deliverable, not per commit.** A deliverable lands as a single branch
+with however many commits it takes, reviewed and merged as one unit. The earliest work here was
+built the other way round — a pull request per step — which produced eight of them for what was
+really one deliverable and made it impossible to review as a whole.
 
 Commits within a branch stay individually meaningful, so the branch reads as a sequence rather
 than one opaque change. Merges are squashed, which is why the pull request description carries
@@ -109,10 +130,11 @@ the reasoning that survives into `main`'s history.
 - **Custom sklearn transformers** (encoders, selectors) must support `sklearn.clone()` and
   pickling — constructor arguments must be primitive and serializable, not settings objects.
 - **Model persistence:** joblib/pickle with a metadata sidecar, see `pvlearn/metadata.py`. Loading
-  a model whose `feature_schema_version`, `pipeline_version`, sklearn minor version, interval, or
-  location does not match current config means hard rejection and retraining — never a
-  best-effort load. The weather provider is not part of that check: it is a per-row categorical
-  feature in the training data now, not a training-run setting.
+  a model whose pvlearn release, interval, or location does not match current config means hard
+  rejection and retraining — never a best-effort load. The release is the only version compared,
+  and it covers schema, pipeline and dependency changes alike (ADR 0003). The weather provider is
+  not part of the check: it is a per-row categorical feature in the training data now, not a
+  training-run setting.
 
 ### Testing
 
