@@ -37,7 +37,7 @@ classifiers = [
 # numpy 2.5 and scipy 1.18 require Python 3.12, which is why 3.11 is not
 # supported.
 dependencies = [
-    "numpy==2.5.1",
+    "numpy==2.5.2",
     "pandas==3.0.5",
     "scikit-learn==1.9.0",
     "scipy==1.18.0",
