@@ -64,7 +64,7 @@ dev = [
     "pytest-xdist==3.8.0",
     # Reading the Parquet reference fixture. The library itself takes DataFrames
     # from its caller and never touches Parquet, so this stays a test dependency.
-    "pyarrow==25.0.0",
+    "pyarrow==25.0.1",
 ]
 
 [build-system]
