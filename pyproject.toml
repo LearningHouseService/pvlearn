@@ -40,7 +40,7 @@ dependencies = [
     "numpy==2.5.1",
     "pandas==3.0.5",
     "scikit-learn==1.9.0",
-    "scipy==1.18.0",
+    "scipy==1.18.1",
     "pydantic==2.13.4",
     "astral==3.2",
     "joblib==1.5.3",
