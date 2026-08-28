@@ -185,7 +185,9 @@ class TestForecasterTrain:
                 forecaster, "_prepare_model_pipeline", return_value=MagicMock()
             ),
             patch.object(
-                forecaster, "_hyperparametertuning", return_value=tuned_pipeline
+                forecaster,
+                "_hyperparametertuning",
+                return_value=(tuned_pipeline, {"model__max_iter": 200}),
             ) as mock_tune,
             patch.object(forecaster, "_evaluate", return_value=make_metrics()),
         ):
@@ -251,7 +253,7 @@ class TestForecasterTrain:
             patch.object(
                 forecaster,
                 "_hyperparametertuning",
-                side_effect=lambda tuning_data, _y, pipeline: pipeline,
+                side_effect=lambda tuning_data, _y, pipeline: (pipeline, {}),
             ) as mock_tune,
             patch.object(forecaster, "_evaluate", return_value=make_metrics()),
         ):
@@ -316,10 +318,218 @@ class TestForecasterTrain:
             steps=[("model", HistGradientBoostingRegressor(random_state=42))]
         )
 
-        tuned = forecaster._hyperparametertuning(data, y_vector, pipeline)
+        tuned, parameters = forecaster._hyperparametertuning(data, y_vector, pipeline)
 
         assert isinstance(tuned, Pipeline)
         assert tuned is not pipeline
+        assert set(parameters) == {
+            "model__max_iter",
+            "model__max_depth",
+            "model__learning_rate",
+        }
+
+
+class TestForecasterHyperparameters:
+    """The per-call tuning switch and the parameters it leaves behind."""
+
+    TUNED = {
+        "model__max_iter": 37,
+        "model__max_depth": 3,
+        "model__learning_rate": 0.05,
+    }
+
+    @classmethod
+    def _tuning_stub(cls, parameters: dict | None = None):
+        """Stand in for the search: set the parameters, report them back."""
+        found = cls.TUNED if parameters is None else parameters
+
+        def tune(_data, _y_vector, pipeline):
+            pipeline.set_params(**found)
+            return pipeline, dict(found)
+
+        return tune
+
+    @classmethod
+    def _train_tuned(cls, forecaster: Forecaster, data: DataFrame) -> None:
+        with patch.object(
+            forecaster, "_hyperparametertuning", side_effect=cls._tuning_stub()
+        ):
+            forecaster.train(data, hyperparametertuning=True)
+
+    @staticmethod
+    def _model_parameters(forecaster: Forecaster) -> dict:
+        assert forecaster.model_pipeline is not None
+        return forecaster.model_pipeline.named_steps["model"].get_params()
+
+    def test_per_call_true_searches_although_the_config_disables_it(self):
+        forecaster = Forecaster(make_location(), make_config())
+
+        with patch.object(
+            forecaster, "_hyperparametertuning", side_effect=self._tuning_stub()
+        ) as mock_tune:
+            forecaster.train(make_training_data(), hyperparametertuning=True)
+
+        mock_tune.assert_called_once()
+
+    def test_per_call_false_skips_the_search_although_the_config_enables_it(self):
+        forecaster = Forecaster(make_location(), make_config(hyperparametertuning=True))
+
+        with patch.object(forecaster, "_hyperparametertuning") as mock_tune:
+            forecaster.train(make_training_data(), hyperparametertuning=False)
+
+        mock_tune.assert_not_called()
+
+    def test_none_follows_a_config_that_enables_tuning(self):
+        forecaster = Forecaster(make_location(), make_config(hyperparametertuning=True))
+
+        with patch.object(
+            forecaster, "_hyperparametertuning", side_effect=self._tuning_stub()
+        ) as mock_tune:
+            forecaster.train(make_training_data())
+
+        mock_tune.assert_called_once()
+
+    def test_none_follows_a_config_that_disables_tuning(self):
+        forecaster = Forecaster(make_location(), make_config())
+
+        with patch.object(forecaster, "_hyperparametertuning") as mock_tune:
+            forecaster.train(make_training_data())
+
+        mock_tune.assert_not_called()
+
+    def test_a_tuned_run_stores_what_the_search_found(self):
+        forecaster = Forecaster(make_location(), make_config())
+
+        self._train_tuned(forecaster, make_training_data())
+
+        assert forecaster.hyperparameters == self.TUNED
+        assert forecaster.hyperparameters_tuned_at is not None
+        assert forecaster.metadata is not None
+        assert forecaster.metadata.hyperparameters == self.TUNED
+        assert (
+            forecaster.metadata.hyperparameters_tuned_at
+            == forecaster.hyperparameters_tuned_at
+        )
+
+    def test_an_untuned_run_fits_the_model_with_the_stored_parameters(self):
+        forecaster = Forecaster(make_location(), make_config())
+        data = make_training_data()
+        self._train_tuned(forecaster, data)
+
+        forecaster.train(data, hyperparametertuning=False)
+
+        fitted = self._model_parameters(forecaster)
+        for key, value in self.TUNED.items():
+            assert fitted[key.removeprefix("model__")] == value
+
+    def test_an_untuned_run_keeps_the_timestamp_of_the_search(self):
+        forecaster = Forecaster(make_location(), make_config())
+        data = make_training_data()
+        self._train_tuned(forecaster, data)
+        tuned_at = forecaster.hyperparameters_tuned_at
+
+        forecaster.train(data, hyperparametertuning=False)
+
+        assert forecaster.hyperparameters_tuned_at == tuned_at
+        assert forecaster.metadata is not None
+        assert forecaster.metadata.hyperparameters_tuned_at == tuned_at
+        assert forecaster.metadata.trained_at != tuned_at
+
+    def test_a_later_search_replaces_the_stored_parameters(self):
+        forecaster = Forecaster(make_location(), make_config())
+        data = make_training_data()
+        self._train_tuned(forecaster, data)
+        first_tuned_at = forecaster.hyperparameters_tuned_at
+
+        with patch.object(
+            forecaster,
+            "_hyperparametertuning",
+            side_effect=self._tuning_stub({"model__max_iter": 42}),
+        ):
+            forecaster.train(data, hyperparametertuning=True)
+
+        assert forecaster.hyperparameters == {"model__max_iter": 42}
+        assert forecaster.hyperparameters_tuned_at != first_tuned_at
+
+    def test_stale_parameters_degrade_into_a_run_with_the_defaults(self):
+        """A parameter grid that changed between releases must not break
+        training in a consumer's retraining loop."""
+        forecaster = Forecaster(make_location(), make_config())
+        data = make_training_data()
+        forecaster.hyperparameters = {"model__no_such_parameter": 1}
+        forecaster.hyperparameters_tuned_at = datetime.now(timezone.utc)
+
+        forecaster.train(data, hyperparametertuning=False)
+
+        defaults = (
+            forecaster._prepare_model_pipeline(data.columns.to_list())
+            .named_steps["model"]
+            .get_params()
+        )
+        assert self._model_parameters(forecaster) == defaults
+        assert forecaster.hyperparameters is None
+        assert forecaster.hyperparameters_tuned_at is None
+        assert forecaster.metadata is not None
+        assert forecaster.metadata.hyperparameters == {}
+
+    def test_failed_training_keeps_the_previously_stored_parameters(self):
+        forecaster = Forecaster(make_location(), make_config())
+        data = make_training_data()
+        self._train_tuned(forecaster, data)
+        tuned_at = forecaster.hyperparameters_tuned_at
+
+        with patch.object(forecaster, "_evaluate", side_effect=RuntimeError("boom")):
+            with pytest.raises(RuntimeError):
+                forecaster.train(data, hyperparametertuning=False)
+
+        assert forecaster.hyperparameters == self.TUNED
+        assert forecaster.hyperparameters_tuned_at == tuned_at
+
+    def test_save_and_load_round_trip_the_stored_parameters(self, tmp_path):
+        location = make_location()
+        config = make_config()
+        forecaster = Forecaster(location, config)
+        self._train_tuned(forecaster, make_training_data())
+        forecaster.save(tmp_path)
+
+        restored = Forecaster.load(tmp_path, location, config)
+
+        assert restored.hyperparameters == self.TUNED
+        assert restored.hyperparameters_tuned_at == forecaster.hyperparameters_tuned_at
+
+    def test_a_restored_model_reuses_the_parameters_without_searching(self, tmp_path):
+        """Without this a process restart forces either a search or a run
+        with the library defaults."""
+        location = make_location()
+        config = make_config()
+        data = make_training_data()
+        forecaster = Forecaster(location, config)
+        self._train_tuned(forecaster, data)
+        forecaster.save(tmp_path)
+
+        restored = Forecaster.load(tmp_path, location, config)
+        restored.train(data, hyperparametertuning=False)
+
+        assert self._model_parameters(restored)["max_iter"] == 37
+
+    def test_a_sidecar_without_the_new_fields_still_loads(self, tmp_path):
+        """A model persisted before the fields existed must not be rejected."""
+        location = make_location()
+        config = make_config()
+        forecaster = Forecaster(location, config)
+        self._train_tuned(forecaster, make_training_data())
+        forecaster.save(tmp_path)
+
+        metadata_path = tmp_path / METADATA_FILENAME
+        sidecar = json.loads(metadata_path.read_text())
+        del sidecar["hyperparameters"]
+        del sidecar["hyperparameters_tuned_at"]
+        metadata_path.write_text(json.dumps(sidecar))
+
+        restored = Forecaster.load(tmp_path, location, config)
+
+        assert restored.hyperparameters is None
+        assert restored.hyperparameters_tuned_at is None
 
 
 class TestForecasterPredict:

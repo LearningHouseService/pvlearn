@@ -2,11 +2,12 @@ import json
 import logging
 import time
 from asyncio import Event
+from datetime import datetime
 from json import JSONDecodeError
 from math import ceil
 from os import replace
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 from joblib import Memory, dump, load
 from numpy import ones_like
@@ -78,6 +79,8 @@ class Forecaster:
         self.interval_minutes = config.interval_minutes
         self.model_pipeline: Pipeline | None = None
         self.metadata: ModelMetadata | None = None
+        self.hyperparameters: dict[str, Any] | None = None
+        self.hyperparameters_tuned_at: datetime | None = None
         self.training_completed: Event = Event()
         self.cache_size_limit_bytes = config.cache_size_limit_mb * 1024 * 1024
 
@@ -89,7 +92,20 @@ class Forecaster:
     def minimum_training_rows(self) -> int:
         return ceil(MINIMUM_TRAINING_HOURS * MINUTES_PER_HOUR / self.interval_minutes)
 
-    def train(self, data: DataFrame) -> None:
+    def train(self, data: DataFrame, hyperparametertuning: bool | None = None) -> None:
+        """Fit a model on `data`, searching for hyperparameters or reusing them.
+
+        `hyperparametertuning` decides for this run alone: `None` follows
+        `enable_hyperparameter_tuning`, `True` searches, `False` skips the
+        search and fits with the parameters the last search found. See
+        ADR 0004.
+        """
+        tuning = (
+            self.enable_hyperparameter_tuning
+            if hyperparametertuning is None
+            else hyperparametertuning
+        )
+
         data_count = len(data)
         logger.info(
             "Training energy model with %d intervals of %d minutes",
@@ -115,12 +131,18 @@ class Forecaster:
 
             pipeline = self._prepare_model_pipeline(data.columns.to_list())
 
-            if self.enable_hyperparameter_tuning:
+            if tuning:
                 # Tuned on the evaluation split's training part only. Searching
                 # over the full dataset would pick the parameters with the
                 # holdout's help and the metrics below would flatter the model.
-                pipeline = self._hyperparametertuning(
+                pipeline, hyperparameters = self._hyperparametertuning(
                     data.iloc[train_index], y_vector.iloc[train_index], pipeline
+                )
+                hyperparameters_tuned_at = datetime.now().astimezone()
+            else:
+                hyperparameters = self._apply_hyperparameters(pipeline)
+                hyperparameters_tuned_at = (
+                    self.hyperparameters_tuned_at if hyperparameters else None
                 )
 
             metrics = self._evaluate(
@@ -154,12 +176,16 @@ class Forecaster:
             # the previously trained model in place rather than replacing it
             # with one that never finished fitting.
             self.model_pipeline = fitted_pipeline
+            self.hyperparameters = hyperparameters
+            self.hyperparameters_tuned_at = hyperparameters_tuned_at
             self.metadata = ModelMetadata.create(
                 location=self.location,
                 config=self.config,
                 training_rows=data_count,
                 selected_features=list(selected_features),
                 metrics=metrics,
+                hyperparameters=hyperparameters,
+                hyperparameters_tuned_at=hyperparameters_tuned_at,
             )
         finally:
             # Waiters must be released even when training failed, or every
@@ -267,12 +293,37 @@ class Forecaster:
         ct.set_output(transform="pandas")
         return ct
 
+    def _apply_hyperparameters(self, pipeline: Pipeline) -> dict[str, Any] | None:
+        """Set the parameters the last search found on a fresh pipeline.
+
+        Returns what was applied, or `None` when there is nothing to apply or
+        the pipeline no longer accepts it. A parameter grid that changed
+        between releases leaves stale keys behind, and those must degrade into
+        a run with the defaults rather than into a failed training — see
+        ADR 0004.
+        """
+        if not self.hyperparameters:
+            return None
+
+        try:
+            pipeline.set_params(**self.hyperparameters)
+        except ValueError:
+            logger.warning(
+                "Dropping stored hyperparameters the pipeline no longer "
+                "accepts (%s), training with the defaults instead",
+                ", ".join(sorted(self.hyperparameters)),
+            )
+            return None
+
+        logger.info("Training with stored hyperparameters: %s", self.hyperparameters)
+        return self.hyperparameters
+
     def _hyperparametertuning(
         self,
         data: DataFrame,
         y_vector: Series,
         pipeline: Pipeline,
-    ) -> Pipeline:
+    ) -> tuple[Pipeline, dict[str, Any]]:
         param_grid = {
             "model__max_iter": [100, 200, 300],
             "model__max_depth": [None, 5, 10],
@@ -299,7 +350,10 @@ class Forecaster:
         logger.info("Training with best parameters: %s", grid_search.best_params_)
         logger.info("Training with best score: %s", grid_search.best_score_)
 
-        return cast(Pipeline, clone(grid_search.best_estimator_))
+        return (
+            cast(Pipeline, clone(grid_search.best_estimator_)),
+            dict(grid_search.best_params_),
+        )
 
     def _cleanup_cache(self) -> None:
         if self.memory is None:
@@ -420,6 +474,8 @@ class Forecaster:
             ) from error
 
         forecaster.metadata = metadata
+        forecaster.hyperparameters = metadata.hyperparameters or None
+        forecaster.hyperparameters_tuned_at = metadata.hyperparameters_tuned_at
         forecaster.training_completed.set()
 
         logger.info(

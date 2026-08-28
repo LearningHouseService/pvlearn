@@ -47,6 +47,10 @@ class ModelMetadata(BaseModel):
     rather than a setting the whole model is pinned to.
 
     The pvlearn release is the single version this compares — see ADR 0003.
+
+    `hyperparameters` and `hyperparameters_tuned_at` describe the model rather
+    than deciding whether it can be loaded, so they take no part in
+    `raise_on_mismatch` — see ADR 0004.
     """
 
     pvlearn_version: str
@@ -56,6 +60,8 @@ class ModelMetadata(BaseModel):
     training_rows: int
     selected_features: list[str]
     metrics: ModelMetrics
+    hyperparameters: dict[str, Any] = {}
+    hyperparameters_tuned_at: datetime | None = None
 
     @classmethod
     def create(
@@ -66,6 +72,8 @@ class ModelMetadata(BaseModel):
         selected_features: list[str],
         metrics: ModelMetrics,
         trained_at: datetime | None = None,
+        hyperparameters: dict[str, Any] | None = None,
+        hyperparameters_tuned_at: datetime | None = None,
     ) -> "ModelMetadata":
         return cls(
             pvlearn_version=__version__,
@@ -75,6 +83,8 @@ class ModelMetadata(BaseModel):
             training_rows=training_rows,
             selected_features=selected_features,
             metrics=metrics,
+            hyperparameters=hyperparameters or {},
+            hyperparameters_tuned_at=hyperparameters_tuned_at,
         )
 
     def raise_on_mismatch(self, location: Location, config: ForecasterConfig) -> None:
