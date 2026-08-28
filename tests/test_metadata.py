@@ -133,6 +133,63 @@ class TestRaiseOnMismatch:
         assert "pvlearn_version" in message
 
 
+class TestHyperparameters:
+    """They describe the model; they do not decide whether it loads."""
+
+    TUNED = {"model__max_iter": 200, "model__learning_rate": 0.01}
+
+    def test_default_to_absent(self):
+        metadata = make_metadata()
+
+        assert metadata.hyperparameters == {}
+        assert metadata.hyperparameters_tuned_at is None
+
+    def test_create_records_them(self):
+        tuned_at = datetime(2026, 8, 28, 9, 0).astimezone()
+
+        metadata = ModelMetadata.create(
+            location=make_location(),
+            config=make_config(),
+            training_rows=1440,
+            selected_features=["sun__time_elevation"],
+            metrics=ModelMetrics(mae=1.0, rmse=2.0, r2=0.9),
+            hyperparameters=self.TUNED,
+            hyperparameters_tuned_at=tuned_at,
+        )
+
+        assert metadata.hyperparameters == self.TUNED
+        assert metadata.hyperparameters_tuned_at == tuned_at
+
+    def test_take_no_part_in_the_compatibility_check(self):
+        metadata = make_metadata(
+            hyperparameters={"model__gone_in_a_later_release": 1},
+            hyperparameters_tuned_at=datetime(2020, 1, 1).astimezone(),
+        )
+
+        metadata.raise_on_mismatch(make_location(), make_config())
+
+    def test_round_trip_through_json(self):
+        metadata = make_metadata(
+            hyperparameters=self.TUNED,
+            hyperparameters_tuned_at=datetime(2026, 8, 28, 9, 0).astimezone(),
+        )
+
+        restored = ModelMetadata.model_validate_json(metadata.model_dump_json())
+
+        assert restored.hyperparameters == self.TUNED
+        assert restored.hyperparameters_tuned_at == metadata.hyperparameters_tuned_at
+
+    def test_a_sidecar_written_without_them_still_validates(self):
+        sidecar = make_metadata().model_dump(mode="json")
+        del sidecar["hyperparameters"]
+        del sidecar["hyperparameters_tuned_at"]
+
+        restored = ModelMetadata.model_validate(sidecar)
+
+        assert restored.hyperparameters == {}
+        assert restored.hyperparameters_tuned_at is None
+
+
 class TestSerialization:
     def test_round_trips_through_json(self):
         metadata = make_metadata()
