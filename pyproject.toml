@@ -43,7 +43,7 @@ dependencies = [
     "scipy==1.18.1",
     "pydantic==2.13.4",
     "astral==3.2",
-    "joblib==1.5.3",
+    "joblib==1.6.0",
 ]
 
 [project.urls]
