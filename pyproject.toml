@@ -38,7 +38,7 @@ classifiers = [
 # supported.
 dependencies = [
     "numpy==2.5.5",
-    "pandas==3.0.5",
+    "pandas==3.1.1",
     "scikit-learn==1.9.0",
     "scipy==1.18.1",
     "pydantic==2.13.5",
