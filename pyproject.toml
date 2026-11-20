@@ -58,7 +58,7 @@ dev = [
     "ruff==0.16.6",
     "tomli==2.5.0",
     "pyright==1.1.411",
-    "pytest==9.1.1",
+    "pytest==9.2.0",
     "pytest-asyncio==1.4.0",
     "pytest-cov==7.1.0",
     "pytest-xdist==3.8.0",
